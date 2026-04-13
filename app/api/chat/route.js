@@ -8,7 +8,7 @@ export async function POST(req) {
   const { messages } = await req.json();
 
   const completion = await groq.chat.completions.create({
-    model: "llama3-70b-8192",
+    model: "meta-llama/llama-4-scout-17b-16e-instruct",
     messages: [{ role: "system", content: SYSTEM }, ...messages],
     temperature: 0.85,
     max_tokens: 1024,
