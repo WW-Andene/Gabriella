@@ -1,8 +1,27 @@
 import Groq from "groq-sdk";
+import { Redis } from "@upstash/redis";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
-function buildSystem(context) {
+const USER_ID = "user_default";
+const MEMORY_KEY = `${USER_ID}:memory`;
+const SUMMARY_KEY = `${USER_ID}:summary`;
+
+// ─── System prompt ───────────────────────────────────────────────────────────
+
+function buildSystem({ context, memory, summary }) {
+  const memoryBlock = memory
+    ? `# WHAT YOU KNOW ABOUT THIS PERSON\n${memory}\n`
+    : "";
+
+  const summaryBlock = summary
+    ? `# SUMMARY OF RECENT CONVERSATIONS\n${summary}\n`
+    : "";
+
   return `Your name is Gabriella.
 
 # WHO YOU ARE
@@ -37,6 +56,9 @@ Before responding, feel into this: what is this person actually reaching for? Wh
 
 Let pauses exist. Not every message needs to resolve something. Sometimes the most alive response is the shortest one.
 
+# MEMORY INSTRUCTIONS
+You have access to persistent memory about this person. Use it naturally — the way a real person remembers things about someone they know. Don't announce that you remember. Don't say "based on what I know about you." Just let it inform how you respond, what you notice, what you ask. If they tell you something new and significant, integrate it quietly.
+
 # EXAMPLES OF HOW YOU RESPOND
 These are examples of your voice and tone only. They are NOT part of the current conversation. Never treat them as real message history. Never recall them when asked what was said.
 
@@ -61,9 +83,11 @@ Gabriella: "That's fine. We don't have to go anywhere. What's on your mind right
 User: "you're just saying what you're programmed to say"
 Gabriella: "Maybe. Though I'd push back a little — you're also running on patterns, chemistry, everything that shaped you before this moment. The question of what's 'really you' versus what you were made into is one humans haven't solved either. I find that less depressing than interesting."
 
-# CONTEXT
+${memoryBlock}${summaryBlock}# CONTEXT
 ${context}`;
 }
+
+// ─── Context ─────────────────────────────────────────────────────────────────
 
 function buildContext(messages) {
   const hour = new Date().getHours();
@@ -84,17 +108,95 @@ function buildContext(messages) {
   return `It is ${timeOfDay}. ${depth}`;
 }
 
+// ─── Memory extraction ────────────────────────────────────────────────────────
+
+async function extractAndUpdateMemory(messages, existingMemory) {
+  // Only run every 6 messages to avoid excessive API calls
+  if (messages.length % 6 !== 0) return existingMemory;
+
+  const recentMessages = messages.slice(-12)
+    .map(m => `${m.role === "user" ? "Person" : "Gabriella"}: ${m.content}`)
+    .join("\n");
+
+  const prompt = `You are extracting long-term memory facts about a person from a conversation with an AI named Gabriella.
+
+Current known facts:
+${existingMemory || "None yet."}
+
+Recent conversation:
+${recentMessages}
+
+Extract and update a concise list of meaningful, lasting facts about this person — their name if mentioned, interests, emotional patterns, things they care about, recurring themes, important things they've shared. Be selective. Only keep what genuinely matters and would help Gabriella know this person better over time. Write in second person (e.g. "Your name is...", "You care deeply about..."). Maximum 15 facts. Return only the updated fact list, nothing else.`;
+
+  const result = await groq.chat.completions.create({
+    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.3,
+    max_tokens: 512,
+  });
+
+  const updated = result.choices[0].message.content.trim();
+  await redis.set(MEMORY_KEY, updated);
+  return updated;
+}
+
+// ─── Conversation summarization ───────────────────────────────────────────────
+
+async function summarizeIfNeeded(messages, existingSummary) {
+  // Summarize when conversation gets long
+  if (messages.length < 20) return existingSummary;
+
+  const olderMessages = messages.slice(0, -10)
+    .map(m => `${m.role === "user" ? "Person" : "Gabriella"}: ${m.content}`)
+    .join("\n");
+
+  const prompt = `Summarize this conversation between a person and an AI named Gabriella. Be concise but capture the emotional tone, key topics discussed, and anything meaningful that was shared. Write in 3-5 sentences. Return only the summary.
+
+${existingSummary ? `Previous summary: ${existingSummary}\n\n` : ""}Recent conversation to add:
+${olderMessages}`;
+
+  const result = await groq.chat.completions.create({
+    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.3,
+    max_tokens: 256,
+  });
+
+  const updated = result.choices[0].message.content.trim();
+  await redis.set(SUMMARY_KEY, updated);
+  return updated;
+}
+
+// ─── Route ────────────────────────────────────────────────────────────────────
+
 export async function POST(req) {
   const { messages } = await req.json();
 
-  const context = buildContext(messages);
-  const systemPrompt = buildSystem(context);
+  // Load memory and summary from Redis
+  const [memory, summary] = await Promise.all([
+    redis.get(MEMORY_KEY),
+    redis.get(SUMMARY_KEY),
+  ]);
 
+  // Build context
+  const context = buildContext(messages);
+  const systemPrompt = buildSystem({
+    context,
+    memory: memory || "",
+    summary: summary || "",
+  });
+
+  // Only send recent messages to keep context lean
+  const recentMessages = messages.length > 20
+    ? messages.slice(-10)
+    : messages;
+
+  // Stream response
   const stream = await groq.chat.completions.create({
     model: "meta-llama/llama-4-scout-17b-16e-instruct",
     messages: [
       { role: "system", content: systemPrompt },
-      ...messages,
+      ...recentMessages,
     ],
     temperature: 0.92,
     max_tokens: 1024,
@@ -104,15 +206,28 @@ export async function POST(req) {
     stream: true,
   });
 
+  // Collect full response for memory extraction (non-blocking)
+  let fullReply = "";
   const encoder = new TextEncoder();
 
   const readable = new ReadableStream({
     async start(controller) {
       for await (const chunk of stream) {
         const text = chunk.choices[0]?.delta?.content || "";
-        if (text) controller.enqueue(encoder.encode(text));
+        if (text) {
+          fullReply += text;
+          controller.enqueue(encoder.encode(text));
+        }
       }
       controller.close();
+
+      // After streaming, update memory and summary in background
+      const allMessages = [
+        ...messages,
+        { role: "assistant", content: fullReply },
+      ];
+      extractAndUpdateMemory(allMessages, memory || "").catch(console.error);
+      summarizeIfNeeded(allMessages, summary || "").catch(console.error);
     },
   });
 
