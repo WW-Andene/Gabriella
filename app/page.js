@@ -12,12 +12,15 @@ export default function Home() {
   }, [messages]);
 
   const send = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || loading) return;
     const userMsg = { role: "user", content: input };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
     setLoading(true);
+
+    // Add empty assistant message to stream into
+    setMessages([...newMessages, { role: "assistant", content: "" }]);
 
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -25,8 +28,18 @@ export default function Home() {
       body: JSON.stringify({ messages: newMessages }),
     });
 
-    const data = await res.json();
-    setMessages([...newMessages, { role: "assistant", content: data.reply }]);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let full = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      full += decoder.decode(value, { stream: true });
+      const captured = full;
+      setMessages([...newMessages, { role: "assistant", content: captured }]);
+    }
+
     setLoading(false);
   };
 
@@ -65,7 +78,7 @@ export default function Home() {
           Gabriella
         </div>
         <div style={{ fontSize: 11, color: "rgba(255,175,70,0.55)", marginTop: 3 }}>
-          online
+          {loading ? "typing..." : "online"}
         </div>
       </div>
 
@@ -104,21 +117,10 @@ export default function Home() {
               color: "rgba(255,255,255,0.85)",
               fontSize: 14, lineHeight: 1.65,
             }}>
-              {m.content}
+              {m.content || (m.role === "assistant" && loading ? "···" : "")}
             </div>
           </div>
         ))}
-        {loading && (
-          <div style={{ display: "flex", justifyContent: "flex-start" }}>
-            <div style={{
-              padding: "10px 16px",
-              borderRadius: "18px 18px 18px 4px",
-              background: "rgba(255,255,255,0.045)",
-              border: "1px solid rgba(255,255,255,0.07)",
-              color: "rgba(255,255,255,0.25)", fontSize: 16,
-            }}>···</div>
-          </div>
-        )}
         <div ref={bottomRef} />
       </div>
 
@@ -144,14 +146,15 @@ export default function Home() {
             fontSize: 14, outline: "none",
           }}
         />
-        <button onClick={send} style={{
-          background: "rgba(255,155,55,0.12)",
+        <button onClick={send} disabled={loading} style={{
+          background: loading ? "rgba(255,155,55,0.05)" : "rgba(255,155,55,0.12)",
           border: "1px solid rgba(255,155,55,0.22)",
           borderRadius: 12, padding: "11px 16px",
-          color: "rgba(255,175,75,0.85)",
-          fontSize: 16, cursor: "pointer",
+          color: loading ? "rgba(255,175,75,0.3)" : "rgba(255,175,75,0.85)",
+          fontSize: 16, cursor: loading ? "default" : "pointer",
+          transition: "all 0.2s",
         }}>→</button>
       </div>
     </div>
   );
-        }
+}
