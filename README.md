@@ -129,29 +129,101 @@ Visit `http://localhost:3000`.
 
 ## Environment
 
-`.env.local` expects:
+`.env.local` expects (required):
 
 - `GROQ_API_KEY`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 - `UPSTASH_VECTOR_REST_URL`
 - `UPSTASH_VECTOR_REST_TOKEN`
-- `CRON_SECRET` (required for `/api/think` and `/api/sleep`)
+- `CRON_SECRET` (required for `/api/think`, `/api/sleep`, `/api/learn`)
+
+Optional (for the learning loop — see **The learning loop** below):
+
+- `TOGETHER_API_KEY`
+- `FIREWORKS_API_KEY` + `FIREWORKS_ACCOUNT_ID`
+- `LEARNING_WEBHOOK_URL`
 
 ## Endpoints
 
 - `POST /api/chat` — main conversation route
-- `GET  /api/think` — background thought generation (cron-triggered)
-- `GET  /api/sleep` — daily consolidation pass (cron-triggered or manual)
+- `GET  /api/think` — background thought generation (cron-triggered, every 4h)
+- `GET  /api/sleep` — daily consolidation pass (cron-triggered, 4am UTC)
+- `GET  /api/learn` — **weekly training push (cron-triggered, Mondays 5am UTC)**
+- `POST /api/learn` — inspect upload history (`?limit=20`)
 
-## Training export
+## The learning loop
+
+Every exchange that passes the gauntlet is labeled and logged. Weekly,
+`/api/learn` turns those logged exchanges into chain-of-thought JSONL
+and uploads them to a fine-tune provider so Gabriella can actually
+learn from her own voice.
+
+### Configure a provider (pick one — or all — or none)
+
+Add whichever set of env vars you want to `.env.local` (or set them as
+Vercel project env vars):
 
 ```bash
-npm run export-training
+# Option A: Together AI
+TOGETHER_API_KEY=sk-...
+
+# Option B: Fireworks AI
+FIREWORKS_API_KEY=fw_...
+FIREWORKS_ACCOUNT_ID=your-account
+
+# Option C: any custom pipeline — the JSONL is POSTed to this URL
+LEARNING_WEBHOOK_URL=https://your-service.example.com/gabriella-training
+
+# All three can be set — every configured provider receives the file.
 ```
 
-Pulls recorded exchanges from Redis into a JSONL file suitable for
-fine-tuning. Standard and chain-of-thought formats are both produced.
+If **none** of these are set, `/api/learn` still runs — the bundle is
+archived into Upstash under `{userId}:learning:archive:cot:{ts}` so no
+data is lost. Switch on a provider later and the next weekly run picks
+up from where the last upload left off.
+
+### The cadence
+
+`/api/learn` runs automatically every Monday at 05:00 UTC. Each run:
+
+1. Reads gauntlet-accepted exchanges logged since the previous upload.
+2. Filters out anything that shouldn't appear in training data.
+3. Produces two JSONL formats (standard + chain-of-thought).
+4. Uploads the CoT file to every configured provider.
+5. Archives a copy to Upstash regardless.
+6. Records the result under `{userId}:learning:history`.
+
+Skip rules: if fewer than **10 new examples** have accumulated since the
+last successful upload, the run no-ops with `reason: "not-enough-new-examples"`.
+
+### Manual run
+
+```bash
+# Produces local JSONL files only
+npm run export-training
+
+# Produces local files AND triggers the /api/learn pipeline (upload)
+npm run push-training
+```
+
+### Inspect history
+
+```bash
+curl -X POST https://<your-deployment>/api/learn \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+Returns the last N upload events: file id, provider, byte count, stats,
+and any per-provider errors.
+
+### Starting the fine-tune
+
+The endpoint pushes the **data**. Kicking off a fine-tune job still
+needs to be done on the provider side — Together's `fine-tune create`,
+Fireworks' `firectl create job`, etc. You only do that once per
+iteration cycle (every few weeks, not every week). Recommended minimum
+before the first fine-tune: **50 CoT examples**.
 
 ## What comes next
 
