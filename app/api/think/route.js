@@ -8,6 +8,9 @@
 //
 // Results are stored in Redis and surfaced in the next conversation via interiority.js.
 
+export const maxDuration = 60;
+export const runtime     = "nodejs";
+
 import { Redis } from "@upstash/redis";
 import { loadMemory } from "../../../lib/gabriella/memory.js";
 import { storeThought } from "../../../lib/gabriella/vectormemory.js";

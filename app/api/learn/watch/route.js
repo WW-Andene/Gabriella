@@ -22,6 +22,9 @@
 //   GET  /api/learn/watch   — poll current status (bearer-authed)
 //   POST /api/learn/watch   — inspect speaker + pending job state
 
+export const maxDuration = 60;
+export const runtime     = "nodejs";
+
 import { Redis } from "@upstash/redis";
 import { loadPendingJob, clearPendingJob, recordLearningEvent } from "../../../../lib/gabriella/learning.js";
 import { getSftJob, ensureDeployed, fireworksConfig, fireworksReady } from "../../../../lib/gabriella/fireworks.js";

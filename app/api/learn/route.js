@@ -18,6 +18,9 @@
 //   GET  /api/learn          — run the full pipeline
 //   POST /api/learn          — return upload / fine-tune history
 
+export const maxDuration = 60;
+export const runtime     = "nodejs";
+
 import { Redis } from "@upstash/redis";
 import {
   pushLearningBundle,

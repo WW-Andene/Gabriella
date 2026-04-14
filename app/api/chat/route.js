@@ -43,6 +43,14 @@ import { recordEpisode }                                    from "../../../lib/g
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 
+// Vercel function configuration.
+// The chat route fires up to ~30 LLM calls per exchange. The default
+// 10s timeout on the hobby plan kills it midway. 60s is the cap on
+// hobby; on Pro this can go higher. Node runtime is required for the
+// Groq SDK and Upstash Redis client.
+export const maxDuration = 60;
+export const runtime     = "nodejs";
+
 // ─── Stream a completed string to the client ──────────────────────────────────
 // Small, human-feeling chunks — not pre-token streaming, but the illusion of
 // typing. The vetted response is complete before streaming begins.

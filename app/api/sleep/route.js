@@ -20,6 +20,9 @@
 // Auth: same Vercel-cron bearer pattern as /api/think. You can also call
 // it manually during development by hitting the URL with the right header.
 
+export const maxDuration = 60;
+export const runtime     = "nodejs";
+
 import { Redis } from "@upstash/redis";
 import { loadMemory }      from "../../../lib/gabriella/memory.js";
 import { queryEpisodes }   from "../../../lib/gabriella/episodic.js";
