@@ -1,0 +1,28 @@
+# Gabriella — curated seed threads for the ingestion pipeline.
+#
+# Lines starting with # are ignored. One Reddit thread URL per line.
+# The pipeline fetches each, extracts exchanges, generates Gabriella's
+# response as training target, tiers into auto / review / drop.
+#
+# These are EXAMPLES — replace or extend with your own curation.
+# The subreddits below skew toward sustained, articulate, emotionally
+# literate conversation, which is what gives her the richest input
+# material to metabolize.
+#
+# Suggested sources, by category:
+#
+# r/AskPhilosophy        — thoughtful engagement with real questions
+# r/changemyview         — structured disagreement, good-faith debate
+# r/AskHistorians        — patient, high-bar explanations
+# r/TrueOffMyChest       — real vulnerability, unfiltered feeling
+# r/relationship_advice  — human mess, real stakes
+# r/AskWomenOver30       — grounded, experienced voice
+# r/books                — literary conversation
+# r/writing              — process reflection
+# r/philosophy           — essays + discussion
+# r/AskMenOver30         — same, other side
+# r/DecidingToBeBetter   — genuine attempts at self-work
+# r/eldertrees           — surprising pocket of careful thought
+#
+# Add or replace URLs below. Blank until you curate. The script will
+# also accept URLs via: npm run ingest-reddit -- --urls "url1,url2"
