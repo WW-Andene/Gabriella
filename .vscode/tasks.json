@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "★ All-in-one: full pipeline (install + bootstrap + upload)",
+      "label": "RUN EVERYTHING (full pipeline)",
       "detail": "One-tap run. Checks env, installs deps if needed, verifies Groq, runs full bootstrap with upload to Fireworks. Safe to re-run.",
       "type": "shell",
       "command": "bash scripts/run-everything.sh",
