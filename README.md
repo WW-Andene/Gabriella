@@ -138,7 +138,13 @@ Visit `http://localhost:3000`.
 - `UPSTASH_VECTOR_REST_TOKEN`
 - `CRON_SECRET` (required for `/api/think`, `/api/sleep`, `/api/learn`)
 
-Optional (for the learning loop — see **The learning loop** below):
+Optional, Groq key pool (see **Multi-key Groq pool** below):
+
+- `GROQ_API_KEY_2` … `GROQ_API_KEY_10` — additional Groq keys;
+  each triple-core lane (Alpha / Beta / Gamma) gets a dedicated key
+  when three or more are configured; other calls round-robin.
+
+Optional, learning loop:
 
 - `TOGETHER_API_KEY`
 - `FIREWORKS_API_KEY` + `FIREWORKS_ACCOUNT_ID`
@@ -148,6 +154,8 @@ Optional (for the learning loop — see **The learning loop** below):
 - `AUTO_FINETUNE_MIN_EXAMPLES=50` — override the minimum before training
 - `AUTO_FINETUNE_MIN_DAYS_BETWEEN=7` — override the minimum cadence
 - `FIREWORKS_BASE_MODEL` — override the base (default: `llama-v3p1-8b-instruct`)
+- `GABRIELLA_PREMIUM_MODEL` / `GABRIELLA_FAST_MODEL` — override the
+  two-tier model split
 
 ## Endpoints
 
@@ -159,6 +167,24 @@ Optional (for the learning loop — see **The learning loop** below):
 - `GET  /api/learn/watch` — **hourly SFT-job watcher (cron, minute 7 of every hour)**
 - `POST /api/learn/watch` — inspect pending job + active speaker model
 - `DELETE /api/learn/watch` — manually roll back the active fine-tune (returns to Groq)
+
+## Multi-key Groq pool
+
+Gabriella fires 20+ Groq calls per exchange. One free-tier key saturates
+quickly — which is why `lib/gabriella/groqPool.js` lets you pool multiple
+keys and route calls intelligently:
+
+- **Lane-dedicated** — when ≥3 Groq keys are configured, each triple-core
+  lane (Alpha / Beta / Gamma) gets its own key. All their parallel
+  calls run on separate accounts and never compete for one key's TPM.
+- **Round-robin** — everything else (synthesis, speaker, gauntlet,
+  evaluators, memory rewrites, think, sleep) rotates across all
+  configured keys.
+- **Auto-rotation on 429** — `withKeyRotation(fn)` retries transient
+  rate-limit errors on the next key, so single-account saturation is
+  invisible to the pipeline.
+
+Configure keys 1-10 via `GROQ_API_KEY`, `GROQ_API_KEY_2`, etc.
 
 ## The learning loop — fully automatic
 

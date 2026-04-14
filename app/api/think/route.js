@@ -8,14 +8,13 @@
 //
 // Results are stored in Redis and surfaced in the next conversation via interiority.js.
 
-import Groq from "groq-sdk";
 import { Redis } from "@upstash/redis";
 import { loadMemory } from "../../../lib/gabriella/memory.js";
 import { storeThought } from "../../../lib/gabriella/vectormemory.js";
 import { getTimeSince } from "../../../lib/gabriella/interiority.js";
 import { premiumModel } from "../../../lib/gabriella/models.js";
+import { pickClient } from "../../../lib/gabriella/groqPool.js";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
@@ -100,7 +99,7 @@ If nothing feels genuinely worth saying, return exactly: NOTHING
 
 Return only the thought, or NOTHING.`;
 
-  const result = await groq.chat.completions.create({
+  const result = await pickClient().chat.completions.create({
     model: premiumModel(),
     messages: [{ role: "user", content: prompt }],
     temperature: 0.85,

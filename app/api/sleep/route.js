@@ -20,14 +20,13 @@
 // Auth: same Vercel-cron bearer pattern as /api/think. You can also call
 // it manually during development by hitting the URL with the right header.
 
-import Groq from "groq-sdk";
 import { Redis } from "@upstash/redis";
-import { loadMemory } from "../../../lib/gabriella/memory.js";
+import { loadMemory }      from "../../../lib/gabriella/memory.js";
 import { queryEpisodes }   from "../../../lib/gabriella/episodic.js";
 import { storeImprint }    from "../../../lib/gabriella/vectormemory.js";
 import { premiumModel }    from "../../../lib/gabriella/models.js";
+import { pickClient }      from "../../../lib/gabriella/groqPool.js";
 
-const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
@@ -134,7 +133,7 @@ Rules:
 Return only the updated soul document.`;
 
   try {
-    const result = await groq.chat.completions.create({
+    const result = await pickClient().chat.completions.create({
       model:       premiumModel(),
       messages:    [{ role: "user", content: prompt }],
       temperature: 0.75,
