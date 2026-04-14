@@ -13,6 +13,7 @@ import { Redis } from "@upstash/redis";
 import { loadMemory } from "../../../lib/gabriella/memory.js";
 import { storeThought } from "../../../lib/gabriella/vectormemory.js";
 import { getTimeSince } from "../../../lib/gabriella/interiority.js";
+import { premiumModel } from "../../../lib/gabriella/models.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const redis = new Redis({
@@ -100,7 +101,7 @@ If nothing feels genuinely worth saying, return exactly: NOTHING
 Return only the thought, or NOTHING.`;
 
   const result = await groq.chat.completions.create({
-    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    model: premiumModel(),
     messages: [{ role: "user", content: prompt }],
     temperature: 0.85,
     max_tokens: 150,

@@ -25,6 +25,7 @@ import { Redis } from "@upstash/redis";
 import { loadMemory } from "../../../lib/gabriella/memory.js";
 import { queryEpisodes }   from "../../../lib/gabriella/episodic.js";
 import { storeImprint }    from "../../../lib/gabriella/vectormemory.js";
+import { premiumModel }    from "../../../lib/gabriella/models.js";
 
 const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const redis = new Redis({
@@ -134,7 +135,7 @@ Return only the updated soul document.`;
 
   try {
     const result = await groq.chat.completions.create({
-      model:       "meta-llama/llama-4-scout-17b-16e-instruct",
+      model:       premiumModel(),
       messages:    [{ role: "user", content: prompt }],
       temperature: 0.75,
       max_tokens:  500,

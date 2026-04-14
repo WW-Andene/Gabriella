@@ -41,6 +41,7 @@ import { patchSystemPromptLinguistics }                     from "../../../lib/g
 import { runTripleCore }                                    from "../../../lib/gabriella/clone/index.js";
 import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
+import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 
 // ─── Stream a completed string to the client ──────────────────────────────────
 // Small, human-feeling chunks — not pre-token streaming, but the illusion of
@@ -153,11 +154,21 @@ export async function POST(req) {
     let innerThought  = thought1;
     let finalGauntlet = gauntletResult;
     let retried       = false;
+    // For DPO: the candidate the gauntlet caught + why, preserved so we
+    // can log the preference pair once a successful retry exists.
+    let rejectedCandidate = null;
+    let rejectedReasons   = null;
 
     if (!gauntletResult.pass) {
-      // 6a. One retry — inject the gauntlet's constraint into the felt-state
-      //     and re-speak. The speaker doesn't see the failures directly;
-      //     it sees a sharpened `resist` clause.
+      // 6a. Remember what was rejected. If the retry passes, this becomes
+      //     a DPO preference pair — same context, two candidates, one
+      //     gauntlet-caught and one clean.
+      rejectedCandidate = candidate;
+      rejectedReasons   = gauntletResult.failures || [];
+
+      // One retry — inject the gauntlet's constraint into the felt-state
+      // and re-speak. The speaker doesn't see the failures directly;
+      // it sees a sharpened `resist` clause.
       retried = true;
       const constraintNote    = getGauntletConstraintBlock(gauntletResult.failures);
       const constraintBullets = constraintNote
@@ -234,6 +245,22 @@ export async function POST(req) {
             const phrase = extractPhraseFromFailure(f);
             return phrase ? recordBannedPhrase(redis, USER_ID, phrase) : Promise.resolve();
           }),
+
+          // DPO preference pair — only log when a clean retry exists.
+          // finalGauntlet.pass means the retry was accepted, and the
+          // only way finalResponse differs from the original candidate
+          // is if it was regenerated. Fallback-length replies don't
+          // count — the breaker there is structural, not preference.
+          (rejectedCandidate && finalGauntlet.pass && finalResponse !== rejectedCandidate)
+            ? recordPreferencePair(redis, USER_ID, {
+                context:         recentMessages,
+                rejected:        rejectedCandidate,
+                rejectedReasons,
+                chosen:          finalResponse,
+                feltState,
+                mood:            currentMood,
+              })
+            : Promise.resolve(),
 
           logExchange(redis, USER_ID, {
             messages,
