@@ -2,15 +2,15 @@
   "crons": [
     {
       "path": "/api/think",
-      "schedule": "0 */4 * * *"
+      "schedule": "0 */6 * * *"
     },
     {
       "path": "/api/sleep",
-      "schedule": "0 4 * * *"
+      "schedule": "0 6 * * *"
     },
     {
       "path": "/api/learn",
-      "schedule": "0 5 * * 1"
+      "schedule": "0 6 * * 1"
     },
     {
       "path": "/api/learn/watch",
