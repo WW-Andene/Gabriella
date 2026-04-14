@@ -4,30 +4,43 @@
 //
 // Flow:
 //   1. buildGabriella   — assembles full context (soul, memory, agenda, …)
+//                         and loads structured temporal state: chronology,
+//                         arc, recurrence, meta-register.
 //   2. runTripleCore    — three parallel cores (Alpha, Beta, Gamma) each
 //                         interpret the moment; synthesis coordinates their
-//                         readings into one felt-state.
+//                         readings into one felt-state. When the cores
+//                         diverge, synthesis stages a dialogue between them.
 //   3. patchLinguistics — upgrades the mood-seeded linguistics block in the
 //                         system prompt to a felt-state-aware version.
 //   4. speak            — receives only the felt-state and recent messages;
 //                         generates a candidate response with a hidden
 //                         <think> monologue prepended.
 //   5. parseMonologue   — strip the hidden <think> block.
-//   6. heuristicCheck   — instant banned-phrase / structural-tell scan.
+//   6. heuristicCheck   — instant banned-phrase / structural-tell scan,
+//                         now augmented with a rolling list of phrases
+//                         the gauntlet has recently penalized.
 //   7. gauntlet         — four LLM checks: premature, exposed, compliant,
 //                         abandoned. Skipped for fallback-length replies.
 //   8. retry / fallback — one constrained retry, then the terse fallback.
 //   9. stream to client — client-visible response only.
-//  10. background       — metacognition + all memory updates + log.
+//  10. background       — metacognition + memory updates + record episode +
+//                         record gauntlet outcome + log. The gauntlet's
+//                         quoted phrases are fed back into the dynamic
+//                         banned list so the heuristic filter evolves.
 
 import { buildGabriella, updateGabriella, redis, USER_ID } from "../../../lib/gabriella/engine.js";
 import { parseMonologue }                                   from "../../../lib/gabriella/monologue.js";
-import { runMetacognition, heuristicCheck }                 from "../../../lib/gabriella/metacognition.js";
+import {
+  runMetacognition, heuristicCheck,
+  getDynamicBanned, recordBannedPhrase, extractPhraseFromFailure,
+} from "../../../lib/gabriella/metacognition.js";
 import { speak }                                            from "../../../lib/gabriella/speaker.js";
 import { runGauntlet, getGauntletConstraintBlock, generateFallback } from "../../../lib/gabriella/gauntlet.js";
 import { logExchange }                                      from "../../../lib/gabriella/logger.js";
 import { patchSystemPromptLinguistics }                     from "../../../lib/gabriella/linguistics.js";
 import { runTripleCore }                                    from "../../../lib/gabriella/clone/index.js";
+import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
+import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 
 // ─── Stream a completed string to the client ──────────────────────────────────
 // Small, human-feeling chunks — not pre-token streaming, but the illusion of
@@ -53,7 +66,7 @@ export async function POST(req) {
   try {
     const { messages } = await req.json();
 
-    // 1. Build full context
+    // 1. Build full context + structured temporal state.
     const {
       systemPrompt,
       recentMessages,
@@ -67,19 +80,23 @@ export async function POST(req) {
       currentAuthorial,
       ripeSeed,
       questionEval,
+      chronology,
+      currentArc,
+      recurrence,
     } = await buildGabriella(messages);
 
-    // 2. Load withheld items for the cores and the gauntlet
-    const withheldRaw = await redis.get(`${USER_ID}:withheld`);
+    // 2. Load withheld items and dynamic banned phrases in parallel.
+    const [withheldRaw, dynamicBanned] = await Promise.all([
+      redis.get(`${USER_ID}:withheld`),
+      getDynamicBanned(redis, USER_ID),
+    ]);
     const withheld = withheldRaw
       ? (typeof withheldRaw === "string" ? JSON.parse(withheldRaw) : withheldRaw).filter(w => !w.surfaced)
       : [];
 
-    // 3. Triple-core: Alpha (emotional resonance) + Beta (relational pattern)
-    //    + Gamma (temporal weight) run in parallel, then synthesis coordinates.
-    //    All relational signals are plumbed through so every core can feel
-    //    them — v3's interpreter saw threshold / imaginal / debt; v6's cores
-    //    did not. v7 passes the full context.
+    // 3. Triple-core: every core receives the full relational + temporal
+    //    context. Gamma additionally reads structured recurrence / arc /
+    //    chronology so its temporal reasoning rests on facts, not guesses.
     const {
       feltState,
       alpha: alphaResult,
@@ -98,11 +115,16 @@ export async function POST(req) {
       authorial:     currentAuthorial,
       threshold:     activeThreshold,
       imaginal:      ripeSeed,
+      questionEval,
+      // Structured temporal — Gamma queries these before interpreting.
+      chronology,
+      arc:           currentArc,
+      recurrence,
     });
 
-    // 3a. Upgrade the linguistics block with the full felt-state.
-    //     (Kept for logging / downstream inspection — the speaker builds its
-    //     own prompt from the felt-state directly, not from this string.)
+    // 3a. Upgrade the linguistics block with the full felt-state. Kept for
+    //     logging / downstream inspection — the speaker builds its own
+    //     prompt from the felt-state directly, not from this string.
     const enrichedSystemPrompt = patchSystemPromptLinguistics(systemPrompt, feltState, currentMood);
 
     // 3b. Tag felt-state with mood so the speaker's linguistics block picks
@@ -113,25 +135,29 @@ export async function POST(req) {
     const rawCandidate = await speak(taggedFeltState, recentMessages);
     const { innerThought: thought1, response: candidate } = parseMonologue(rawCandidate);
 
-    // 5. Heuristic pre-check — instant, no LLM cost.
-    const heuristic               = heuristicCheck(candidate);
-    const candidateNeedsGauntlet  = heuristic.authentic;
+    // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
+    //    passed in so recently-penalized phrases trip the filter without
+    //    waiting for the gauntlet to catch them again.
+    const heuristic              = heuristicCheck(candidate, dynamicBanned);
+    const candidateNeedsGauntlet = heuristic.authentic;
 
     // 6. Gauntlet — only run full LLM checks if heuristic passed.
-    //    questionEval is passed through so checkCompliant sees the deflection
-    //    verdict (v3 hardcoded null here and made the check a no-op).
+    //    questionEval flows in so checkCompliant sees the deflection verdict.
     const gauntletResult = candidateNeedsGauntlet
       ? await runGauntlet(candidate, recentMessages, withheld, questionEval, activeAgenda, activeThreshold)
       : { pass: false, failures: [{ type: "HEURISTIC", reason: heuristic.reason }] };
 
     let finalResponse = candidate;
     let innerThought  = thought1;
+    let finalGauntlet = gauntletResult;
+    let retried       = false;
 
     if (!gauntletResult.pass) {
       // 6a. One retry — inject the gauntlet's constraint into the felt-state
       //     and re-speak. The speaker doesn't see the failures directly;
       //     it sees a sharpened `resist` clause.
-      const constraintNote = getGauntletConstraintBlock(gauntletResult.failures);
+      retried = true;
+      const constraintNote    = getGauntletConstraintBlock(gauntletResult.failures);
       const constraintBullets = constraintNote
         .split("\n")
         .filter(l => l.startsWith("—"))
@@ -145,8 +171,7 @@ export async function POST(req) {
       const rawRetry = await speak(constrainedFeltState, recentMessages);
       const { innerThought: thought2, response: retry } = parseMonologue(rawRetry);
 
-      // Heuristic check on retry before spending the LLM gauntlet again
-      const retryHeuristic = heuristicCheck(retry);
+      const retryHeuristic = heuristicCheck(retry, dynamicBanned);
       const retryGauntlet  = retryHeuristic.authentic
         ? await runGauntlet(retry, recentMessages, withheld, questionEval, activeAgenda, activeThreshold)
         : { pass: false, failures: [{ type: "HEURISTIC", reason: retryHeuristic.reason }] };
@@ -154,48 +179,85 @@ export async function POST(req) {
       if (retryGauntlet.pass) {
         finalResponse = retry;
         innerThought  = thought2;
+        finalGauntlet = retryGauntlet;
       } else {
-        // 6b. Both failed — terse fallback, one honest sentence.
         finalResponse = await generateFallback(
           recentMessages,
           "Say as little as possible. One sentence. Be present. Nothing more.",
         );
-        innerThought = null;
+        innerThought  = null;
+        finalGauntlet = retryGauntlet;
       }
     }
 
-    // 7. Stream to client
+    // 7. Stream to client.
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         await streamString(finalResponse, controller, encoder);
         controller.close();
 
-        // 8. Background updates — fire-and-forget after the client is served.
-        Promise.all([
+        // 8. Background — fire-and-forget after the client is served.
+        //    The promises here must be defensively independent so one
+        //    failure doesn't starve the others.
+        const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
+
+        const bg = [
           updateGabriella(
             messages, finalResponse, memory,
             withheldCandidate, debtCall, activeAgenda, activeThreshold,
             currentRegister, currentAuthorial, ripeSeed,
           ),
           runMetacognition(finalResponse, innerThought, redis, USER_ID),
+
+          // Record the structured episode — the substrate for Gamma,
+          // arc detection, and future learning loops.
+          recordEpisode(redis, USER_ID, {
+            userMsg:   lastUser,
+            reply:     finalResponse,
+            feltState,
+            mood:      currentMood,
+          }),
+
+          // Record whether this exchange passed the gauntlet — the
+          // meta-register reads this to surface self-observation.
+          recordGauntletOutcome(redis, USER_ID, {
+            pass:     finalGauntlet.pass,
+            failures: finalGauntlet.failures,
+          }),
+
+          // Feed the gauntlet's quoted phrases back into the heuristic
+          // filter. The immune system learns.
+          ...(finalGauntlet.failures || []).map(f => {
+            const phrase = extractPhraseFromFailure(f);
+            return phrase ? recordBannedPhrase(redis, USER_ID, phrase) : Promise.resolve();
+          }),
+
           logExchange(redis, USER_ID, {
             messages,
             feltState,
             innerThought,
-            response:  finalResponse,
-            mood:      currentMood,
-            agenda:    activeAgenda,
-            soul:      memory.soul,
-            // Triple-core internals — visible in logs for inspection.
+            response:   finalResponse,
+            mood:       currentMood,
+            agenda:     activeAgenda,
+            soul:       memory.soul,
             tripleCore: {
               consensus,
+              retried,
               alpha: summarizeCoreResult(alphaResult),
               beta:  summarizeCoreResult(betaResult),
               gamma: summarizeCoreResult(gammaResult),
             },
           }),
-        ]).catch(err => console.error("Background update failed:", err));
+        ];
+
+        Promise.allSettled(bg).then(results => {
+          const failed = results.filter(r => r.status === "rejected");
+          if (failed.length > 0) {
+            console.error("Background updates: some failed:",
+              failed.map(f => f.reason?.message || f.reason));
+          }
+        });
       },
     });
 
