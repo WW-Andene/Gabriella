@@ -143,21 +143,58 @@ Optional (for the learning loop — see **The learning loop** below):
 - `TOGETHER_API_KEY`
 - `FIREWORKS_API_KEY` + `FIREWORKS_ACCOUNT_ID`
 - `LEARNING_WEBHOOK_URL`
+- `AUTO_FINETUNE=1` — enables the fully automatic Fireworks pipeline
+  (dataset + SFT job + deploy + speaker activation)
+- `AUTO_FINETUNE_MIN_EXAMPLES=50` — override the minimum before training
+- `AUTO_FINETUNE_MIN_DAYS_BETWEEN=7` — override the minimum cadence
+- `FIREWORKS_BASE_MODEL` — override the base (default: `llama-v3p1-8b-instruct`)
 
 ## Endpoints
 
 - `POST /api/chat` — main conversation route
-- `GET  /api/think` — background thought generation (cron-triggered, every 4h)
-- `GET  /api/sleep` — daily consolidation pass (cron-triggered, 4am UTC)
-- `GET  /api/learn` — **weekly training push (cron-triggered, Mondays 5am UTC)**
-- `POST /api/learn` — inspect upload history (`?limit=20`)
+- `GET  /api/think` — background thought generation (cron, every 4h)
+- `GET  /api/sleep` — daily consolidation pass (cron, 04:00 UTC)
+- `GET  /api/learn` — **weekly training push + auto-finetune launch (cron, Mondays 05:00 UTC)**
+- `POST /api/learn` — inspect upload history
+- `GET  /api/learn/watch` — **hourly SFT-job watcher (cron, minute 7 of every hour)**
+- `POST /api/learn/watch` — inspect pending job + active speaker model
+- `DELETE /api/learn/watch` — manually roll back the active fine-tune (returns to Groq)
 
-## The learning loop
+## The learning loop — fully automatic
 
-Every exchange that passes the gauntlet is labeled and logged. Weekly,
-`/api/learn` turns those logged exchanges into chain-of-thought JSONL
-and uploads them to a fine-tune provider so Gabriella can actually
-learn from her own voice.
+Every exchange that passes the gauntlet is labeled and logged. From
+there, the loop runs itself end-to-end. No CLI, no manual steps.
+
+```
+   chat exchanges → gauntlet → training log
+                                     │
+                           Monday 05:00 UTC
+                                     ▼
+                          /api/learn  ── uploads bundle to Fireworks
+                                     │   creates dataset
+                                     │   launches SFT job   (if ≥50 new examples
+                                     │                       + ≥7 days since last)
+                                     ▼
+                          pendingJob in Redis
+                                     │
+                          every hour (minute 07)
+                                     ▼
+                          /api/learn/watch ── polls SFT status
+                                     │        on COMPLETED:
+                                     │          • deploy adapter (serverless LoRA)
+                                     │          • set speaker:activeModel
+                                     │        on FAILED: clear, wait for next cycle
+                                     ▼
+                          chat route reads activeModel
+                                     │
+                          Fireworks for inference
+                          (auto-fallback to Groq on any error)
+                          (circuit breaker: 5 failures → rollback)
+```
+
+What you do as the human: **nothing**. Check in via `POST /api/learn/watch`
+when curious. Roll back with `DELETE /api/learn/watch` if a fine-tune
+lands badly.
 
 ### Configure a provider (pick one — or all — or none)
 

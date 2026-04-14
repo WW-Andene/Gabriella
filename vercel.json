@@ -11,6 +11,10 @@
     {
       "path": "/api/learn",
       "schedule": "0 5 * * 1"
+    },
+    {
+      "path": "/api/learn/watch",
+      "schedule": "7 * * * *"
     }
   ]
 }
