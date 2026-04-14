@@ -6,10 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "export-training":    "node --env-file=.env.local scripts/export.js",
-    "push-training":      "node --env-file=.env.local scripts/export.js --push",
-    "bootstrap-training": "node --env-file=.env.local scripts/bootstrap-training.js",
-    "ingest-reddit":      "node --env-file=.env.local scripts/ingest-reddit.js"
+    "run-everything":        "bash scripts/run-everything.sh",
+    "bootstrap-training":    "node --env-file=.env.local scripts/bootstrap-training.js",
+    "bootstrap-push":        "node --env-file=.env.local scripts/bootstrap-training.js --push",
+    "bootstrap-test":        "node --env-file=.env.local scripts/bootstrap-training.js --scenarios 5",
+    "ingest-reddit":         "node --env-file=.env.local scripts/ingest-reddit.js",
+    "ingest-reddit-finalize":"node --env-file=.env.local scripts/ingest-reddit.js --finalize",
+    "ingest-reddit-push":    "node --env-file=.env.local scripts/ingest-reddit.js --finalize --push",
+    "export-training":       "node --env-file=.env.local scripts/export.js",
+    "push-training":         "node --env-file=.env.local scripts/export.js --push"
   },
   "dependencies": {
     "next": "14.2.0",
