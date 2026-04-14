@@ -1,0 +1,141 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Bootstrap: test run (5 scenarios, no upload)",
+      "detail": "Fastest sanity check. ~30 seconds. Writes training-data/bootstrap-cot.jsonl.",
+      "type": "shell",
+      "command": "npm run bootstrap-training -- --scenarios 5",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Bootstrap: full run (all scenarios, no upload)",
+      "detail": "Full ~45 scenarios. ~2-3 min. Writes training-data/bootstrap-cot.jsonl for inspection.",
+      "type": "shell",
+      "command": "npm run bootstrap-training",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Bootstrap: full run + push to Fireworks",
+      "detail": "Full run then upload to Fireworks + archive to Upstash. Requires FIREWORKS_API_KEY.",
+      "type": "shell",
+      "command": "npm run bootstrap-training -- --push",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Reddit ingest: fetch + generate + tier",
+      "detail": "Reads seed-threads.txt, fetches, generates Gabriella's responses, tiers auto/review/drop.",
+      "type": "shell",
+      "command": "npm run ingest-reddit",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Reddit ingest: finalize (merge reviewed + auto)",
+      "detail": "After you've reviewed reddit-review-cot.md, run this to produce the final JSONL.",
+      "type": "shell",
+      "command": "npm run ingest-reddit -- --finalize",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Reddit ingest: finalize + push to Fireworks",
+      "detail": "Finalize and upload the reviewed dataset to Fireworks.",
+      "type": "shell",
+      "command": "npm run ingest-reddit -- --finalize --push",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Export training data to JSONL (from real exchanges)",
+      "detail": "Exports gauntlet-accepted real conversations into training-data/*.jsonl.",
+      "type": "shell",
+      "command": "npm run export-training",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Dev server (npm run dev)",
+      "detail": "Start Gabriella's Next.js app locally. Codespace forwards port 3000.",
+      "type": "shell",
+      "command": "npm run dev",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      },
+      "isBackground": true
+    },
+    {
+      "label": "Diagnostics: check env + install",
+      "detail": "Prints .env.local state, Node version, and whether groq-sdk is installed.",
+      "type": "shell",
+      "command": "echo '=== .env.local ===' && (cat .env.local 2>/dev/null | sed 's/=.*/=<redacted>/' || echo 'MISSING — rebuild container or check Codespace secrets') && echo '' && echo '=== node version ===' && node --version && echo '' && echo '=== groq-sdk installed? ===' && (ls node_modules/groq-sdk/package.json >/dev/null 2>&1 && echo 'yes' || echo 'NO — run npm install') && echo '' && echo '=== groq pool size ===' && node --env-file=.env.local -e 'import(\"./lib/gabriella/groqPool.js\").then(m => console.log(\"configured keys:\", m.poolSize()))' 2>&1",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    }
+  ]
+}
