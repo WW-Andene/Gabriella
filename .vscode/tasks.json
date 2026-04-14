@@ -2,6 +2,21 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "★ All-in-one: full pipeline (install + bootstrap + upload)",
+      "detail": "One-tap run. Checks env, installs deps if needed, verifies Groq, runs full bootstrap with upload to Fireworks. Safe to re-run.",
+      "type": "shell",
+      "command": "bash scripts/run-everything.sh",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal":         "always",
+        "panel":          "dedicated",
+        "echo":           true,
+        "focus":          false,
+        "clear":          true,
+        "showReuseMessage": false
+      }
+    },
+    {
       "label": "Bootstrap: test run (5 scenarios, no upload)",
       "detail": "Fastest sanity check. ~30 seconds. Writes training-data/bootstrap-cot.jsonl.",
       "type": "shell",
