@@ -43,6 +43,8 @@ import { recordEpisode }                                    from "../../../lib/g
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
+import { premiumModel }                                     from "../../../lib/gabriella/models.js";
+import { pickClient }                                       from "../../../lib/gabriella/groqPool.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -94,6 +96,7 @@ export async function POST(req) {
       currentArc,
       recurrence,
       reasoningTrace,
+      pragmatics,
     } = await buildGabriella(messages);
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
@@ -104,6 +107,70 @@ export async function POST(req) {
     const withheld = withheldRaw
       ? (typeof withheldRaw === "string" ? JSON.parse(withheldRaw) : withheldRaw).filter(w => !w.surfaced)
       : [];
+
+    // 2a. PRAGMATIC FAST-PATH.
+    //     When the incoming message is phatic (a greeting, a small-talk
+    //     check-in) AND there isn't enough accumulated context to ground
+    //     a weighted reading, bypass the triple-core, deliberation, and
+    //     gauntlet. These layers only find meaning proportional to
+    //     substance — on low-weight moments they manufacture it.
+    //
+    //     The fast-path still uses the full system prompt (so voice,
+    //     mood, memory, chronology, and register are preserved). It
+    //     just skips the interpretive pipeline that was producing
+    //     unjustified intensity.
+    const fastPathEligible =
+      pragmatics &&
+      (pragmatics.act === "phatic" || (pragmatics.act === "casual" && pragmatics.weight < 0.22)) &&
+      pragmatics.weight < 0.25;
+
+    if (fastPathEligible) {
+      const fastResponse = await generateFastPath({
+        systemPrompt,
+        recentMessages,
+        pragmatics,
+        currentMood,
+      });
+
+      const encoder  = new TextEncoder();
+      const readable = new ReadableStream({
+        async start(controller) {
+          await streamString(fastResponse, controller, encoder);
+          controller.close();
+
+          const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
+          Promise.allSettled([
+            updateGabriella(
+              messages, fastResponse, memory,
+              withheldCandidate, debtCall, activeAgenda, activeThreshold,
+              currentRegister, currentAuthorial, ripeSeed,
+              null, reasoningTrace,
+            ),
+            recordEpisode(redis, USER_ID, {
+              userMsg:   lastUser,
+              reply:     fastResponse,
+              feltState: null,
+              mood:      currentMood,
+            }),
+            logExchange(redis, USER_ID, {
+              messages,
+              feltState: null,
+              innerThought: null,
+              response:   fastResponse,
+              mood:       currentMood,
+              agenda:     activeAgenda,
+              soul:       memory.soul,
+              tripleCore: { consensus: "fast-path", retried: false, alpha: null, beta: null, gamma: null },
+              pragmatics,
+            }),
+          ]).catch(err => console.error("Fast-path background failed:", err));
+        },
+      });
+
+      return new Response(readable, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
 
     // 3. Triple-core: every core receives the full relational + temporal
     //    context. Gamma additionally reads structured recurrence / arc /
@@ -135,6 +202,10 @@ export async function POST(req) {
       // over across turns, so interpretation is a continuation, not a
       // cold start.
       reasoningTrace,
+      // Pragmatic classification — act, weight, register, substrate.
+      // Bounds how much intensity each core is allowed to read into
+      // the moment.
+      pragmatics,
     });
 
     // 3a. Upgrade the linguistics block with the full felt-state. Kept for
@@ -163,12 +234,13 @@ export async function POST(req) {
       activeAgenda,
       activeThreshold,
       ripeSeed,
+      pragmatics,
     });
 
     // 4. Speaker receives felt-state + deliberation + messages.
     //    Passing redis lets the speaker route to Fireworks if a
     //    fine-tune has been activated, with automatic Groq fallback.
-    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation);
+    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics);
     const { innerThought: thought1, response: candidate } = parseMonologue(rawCandidate);
 
     // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
@@ -214,7 +286,7 @@ export async function POST(req) {
         resist: `${taggedFeltState.resist}. ${constraintBullets}`,
       };
 
-      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation);
+      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics);
       const { innerThought: thought2, response: retry } = parseMonologue(rawRetry);
 
       const retryHeuristic = heuristicCheck(retry, dynamicBanned);
@@ -348,4 +420,66 @@ function summarizeCoreResult(coreResult) {
     edge:        feltState.edge,
     notice:      feltState.notice,
   };
+}
+
+// ─── Fast-path generation ─────────────────────────────────────────────────────
+//
+// Called only when the incoming message has been classified as phatic or
+// light-casual with insufficient substrate. No triple-core, no deliberation,
+// no gauntlet — those layers exist to find meaning proportional to substance,
+// and on low-weight moments they manufacture it.
+//
+// What the fast-path DOES still get:
+//   • Full assembled system prompt (soul, identity, memory, chronology,
+//     mood, voice, linguistics, register, pragmatics block). So her voice,
+//     history with the person, and current mood are all available.
+//   • Register-matching directive — match the person's length, formality,
+//     punctuation style.
+//   • A direct "meet this as a person meeting another person" instruction.
+
+async function generateFastPath({ systemPrompt, recentMessages, pragmatics, currentMood }) {
+  const reg = pragmatics?.register || {};
+  const lengthTarget =
+    reg.length === "very-short" ? "One to five words. A greeting is a greeting." :
+    reg.length === "short"      ? "Under fifteen words. Match their brevity." :
+    reg.length === "medium"     ? "One to three sentences. Don't over-elaborate." :
+                                  "Two to four sentences.";
+
+  const formalityCue =
+    reg.formality === "casual" ? "They're casual. Be casual — yo/yeah/hey register is appropriate." :
+    reg.formality === "formal" ? "They're slightly formal. Meet that." :
+                                 "Neutral, everyday conversation.";
+
+  const fastDirective = `
+
+# FAST-PATH — MEET THIS AS A PERSON WOULD
+
+This message is light: ${pragmatics.act}, weight ${pragmatics.weight}. There is no buried subtext to surface and no accumulated history weighty enough to draw on yet. Don't perform depth. Don't interrogate. Don't cryptify. Don't be Hollywood.
+
+Respond the way a real person responds to ${pragmatics.act === "phatic" ? "a greeting or check-in" : "casual conversation"}:
+— ${lengthTarget}
+— ${formalityCue}
+— You're allowed to be warm, dry, wry, or neutral — whichever matches your actual mood right now (${currentMood}). You're not allowed to be mysterious for its own sake.
+— Their register: length=${reg.length}, formality=${reg.formality}, directness=${reg.directness}, punctuation=${reg.punctuationStyle}. Calibrate to this.
+— If they said "hi", you can just say hi back. Intensity you haven't earned is theatre, not presence.
+
+Output only the response text. No <think> block needed for this — it's not that kind of moment.`;
+
+  const result = await pickClient().chat.completions.create({
+    model: premiumModel(),
+    messages: [
+      { role: "system", content: systemPrompt + fastDirective },
+      ...recentMessages.slice(-6),
+    ],
+    temperature:       0.85,
+    max_tokens:        140,
+    top_p:             0.92,
+    frequency_penalty: 0.3,
+    presence_penalty:  0.3,
+  });
+
+  let text = result.choices[0].message.content.trim();
+  // Strip any stray <think> block if the model wrote one anyway.
+  text = text.replace(/<think>[\s\S]*?<\/think>\s*/i, "").trim();
+  return text;
 }
