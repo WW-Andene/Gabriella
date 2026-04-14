@@ -25,17 +25,19 @@ export const runtime     = "nodejs";
 
 import { Redis } from "@upstash/redis";
 import { loadMemory }      from "../../../lib/gabriella/memory.js";
-import { queryEpisodes }   from "../../../lib/gabriella/episodic.js";
+import { queryEpisodes, recentFeltStates }  from "../../../lib/gabriella/episodic.js";
 import { storeImprint }    from "../../../lib/gabriella/vectormemory.js";
 import { premiumModel }    from "../../../lib/gabriella/models.js";
 import { pickClient }      from "../../../lib/gabriella/groqPool.js";
+import { loadChronology }  from "../../../lib/gabriella/chronology.js";
+import { loadPerson }      from "../../../lib/gabriella/person.js";
+import { rewriteNarrative } from "../../../lib/gabriella/narrative.js";
+import { listActiveUsers, DEFAULT_USER } from "../../../lib/gabriella/users.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
-
-const USER_ID = "user_default";
 
 // Thresholds that shape the sleep pass. Small and conservative — sleep
 // should deepen the record, not overwrite it.
@@ -51,51 +53,75 @@ export async function GET(req) {
   }
 
   try {
-    const [memory, episodesAll] = await Promise.all([
-      loadMemory(redis, USER_ID),
-      queryEpisodes(redis, USER_ID, { limit: 200 }),
-    ]);
+    const users = await listActiveUsers(redis, { withinMs: 30 * 24 * 60 * 60 * 1000 });
+    // Always include the default id so single-user deployments keep
+    // sleeping even before any multi-user activity has registered.
+    const ids = Array.from(new Set([DEFAULT_USER, ...users]));
 
-    const now          = Date.now();
-    const recentWindow = episodesAll.filter(e => now - e.t <= SLEEP_LOOKBACK_MS);
+    const perUser = await Promise.all(ids.map(userId => sleepForUser(userId)));
 
-    if (recentWindow.length < MIN_EPISODES_FOR_SLEEP) {
-      return ok({ skipped: true, reason: "not enough recent episodes", seen: recentWindow.length });
-    }
-
-    // Run consolidation passes in parallel where independent.
-    const [soulUpdate, newImprints, prunedWithheld, trimmedBanned] = await Promise.all([
-      consolidateSoul(memory, recentWindow),
-      formImprints(recentWindow),
-      pruneWithheld(),
-      trimDynamicBanned(),
-    ]);
-
-    if (soulUpdate) {
-      await Promise.all([
-        redis.set(`${USER_ID}:soul`, soulUpdate),
-        redis.set(`${USER_ID}:lastUpdate:soul`, now),
-      ]);
-    }
-
-    // Push imprints into vector memory so resonant recall surfaces them.
-    await Promise.all(newImprints.map(imp =>
-      storeImprint(USER_ID, imp.text, imp.charge || null, imp.mood || null, imp.feltState || null)
-    ));
-
-    return ok({
-      episodesConsidered: recentWindow.length,
-      soulRewritten:      !!soulUpdate,
-      imprintsCreated:    newImprints.length,
-      withheldPruned:     prunedWithheld,
-      bannedTrimmed:      trimmedBanned,
-    });
+    return ok({ users: perUser });
   } catch (err) {
     console.error("Sleep failed:", err);
     return new Response(JSON.stringify({ ok: false, error: err.message }), {
       status:  500,
       headers: { "Content-Type": "application/json" },
     });
+  }
+}
+
+async function sleepForUser(userId) {
+  try {
+    const [memory, episodesAll, chronology, person, recentFs] = await Promise.all([
+      loadMemory(redis, userId),
+      queryEpisodes(redis, userId, { limit: 200 }),
+      loadChronology(redis, userId).catch(() => null),
+      loadPerson(redis, userId).catch(() => null),
+      recentFeltStates(redis, userId, 20).catch(() => []),
+    ]);
+
+    const now          = Date.now();
+    const recentWindow = episodesAll.filter(e => now - e.t <= SLEEP_LOOKBACK_MS);
+
+    if (recentWindow.length < MIN_EPISODES_FOR_SLEEP) {
+      return { userId, skipped: true, reason: "not enough recent episodes", seen: recentWindow.length };
+    }
+
+    // Run consolidation passes in parallel where independent.
+    const [soulUpdate, newImprints, prunedWithheld, trimmedBanned, narrativeUpdate] = await Promise.all([
+      consolidateSoul(memory, recentWindow),
+      formImprints(recentWindow),
+      pruneWithheld(userId),
+      trimDynamicBanned(userId),
+      // Rewrite narrative nightly. rewriteNarrative is internally debounced
+      // but the daily cron is the right cadence for it regardless.
+      rewriteNarrative(redis, userId, {
+        messages: [], memory, chronology, person, recentFs,
+      }).catch(() => null),
+    ]);
+
+    if (soulUpdate) {
+      await Promise.all([
+        redis.set(`${userId}:soul`, soulUpdate),
+        redis.set(`${userId}:lastUpdate:soul`, now),
+      ]);
+    }
+
+    await Promise.all(newImprints.map(imp =>
+      storeImprint(userId, imp.text, imp.charge || null, imp.mood || null, imp.feltState || null)
+    ));
+
+    return {
+      userId,
+      episodesConsidered: recentWindow.length,
+      soulRewritten:      !!soulUpdate,
+      imprintsCreated:    newImprints.length,
+      withheldPruned:     prunedWithheld,
+      bannedTrimmed:      trimmedBanned,
+      narrativeRewritten: !!narrativeUpdate?.text,
+    };
+  } catch (err) {
+    return { userId, error: err?.message || String(err) };
   }
 }
 
@@ -172,8 +198,8 @@ async function formImprints(episodes) {
 
 // ─── Prune withheld items that have been sitting too long ─────────────────────
 
-async function pruneWithheld() {
-  const raw = await redis.get(`${USER_ID}:withheld`);
+async function pruneWithheld(userId) {
+  const raw = await redis.get(`${userId}:withheld`);
   if (!raw) return 0;
 
   const list = typeof raw === "string" ? JSON.parse(raw) : raw;
@@ -188,14 +214,14 @@ async function pruneWithheld() {
 
   if (kept.length === list.length) return 0;
 
-  await redis.set(`${USER_ID}:withheld`, JSON.stringify(kept));
+  await redis.set(`${userId}:withheld`, JSON.stringify(kept));
   return list.length - kept.length;
 }
 
 // ─── Trim the dynamic banned phrase list ──────────────────────────────────────
 
-async function trimDynamicBanned() {
-  const key = `${USER_ID}:dynamicBanned`;
+async function trimDynamicBanned(userId) {
+  const key = `${userId}:dynamicBanned`;
   const len = await redis.llen(key);
   if (!len || len <= DYNAMIC_BANNED_MAX) return 0;
 

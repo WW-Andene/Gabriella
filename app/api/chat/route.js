@@ -43,8 +43,9 @@ import { recordEpisode }                                    from "../../../lib/g
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
-import { premiumModel }                                     from "../../../lib/gabriella/models.js";
+import { premiumModel, unifiedCognition }                   from "../../../lib/gabriella/models.js";
 import { pickClient }                                       from "../../../lib/gabriella/groqPool.js";
+import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -78,6 +79,11 @@ export async function POST(req) {
   try {
     const { messages } = await req.json();
 
+    // Resolve user id (header / cookie / derived). Register for cron
+    // iteration. All subsequent state is keyed to this userId.
+    const userId = resolveUserId(req);
+    registerUser(redis, userId).catch(() => {});
+
     // 1. Build full context + structured temporal state.
     const {
       systemPrompt,
@@ -97,12 +103,17 @@ export async function POST(req) {
       recurrence,
       reasoningTrace,
       pragmatics,
-    } = await buildGabriella(messages);
+      affectState,
+      personModel,
+      narrative,
+      trajectory,
+      phase,
+    } = await buildGabriella(messages, { userId });
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
     const [withheldRaw, dynamicBanned] = await Promise.all([
-      redis.get(`${USER_ID}:withheld`),
-      getDynamicBanned(redis, USER_ID),
+      redis.get(`${userId}:withheld`),
+      getDynamicBanned(redis, userId),
     ]);
     const withheld = withheldRaw
       ? (typeof withheldRaw === "string" ? JSON.parse(withheldRaw) : withheldRaw).filter(w => !w.surfaced)
@@ -145,14 +156,15 @@ export async function POST(req) {
               withheldCandidate, debtCall, activeAgenda, activeThreshold,
               currentRegister, currentAuthorial, ripeSeed,
               null, reasoningTrace,
+              { userId },
             ),
-            recordEpisode(redis, USER_ID, {
+            recordEpisode(redis, userId, {
               userMsg:   lastUser,
               reply:     fastResponse,
               feltState: null,
               mood:      currentMood,
             }),
-            logExchange(redis, USER_ID, {
+            logExchange(redis, userId, {
               messages,
               feltState: null,
               innerThought: null,
@@ -172,16 +184,22 @@ export async function POST(req) {
       });
     }
 
-    // 3. Triple-core: every core receives the full relational + temporal
-    //    context. Gamma additionally reads structured recurrence / arc /
-    //    chronology so its temporal reasoning rests on facts, not guesses.
+    // 3. Cognition — triple-core by default; collapsed to a single-pass
+    //    unified interpretation if UNIFIED_COGNITION is set. Unified mode
+    //    is for AFTER a strong SFT has been activated: the cores served
+    //    their purpose generating multi-angle training data, and at
+    //    inference a trained speaker can carry integration alone.
     const {
       feltState,
       alpha: alphaResult,
       beta:  betaResult,
       gamma: gammaResult,
       consensus,
-    } = await runTripleCore({
+    } = unifiedCognition()
+      ? await runUnifiedCognition({
+          memory, recentMessages, currentMood, pragmatics, reasoningTrace,
+        })
+      : await runTripleCore({
       soul:          memory.soul,
       recentMessages,
       memory,
@@ -241,7 +259,7 @@ export async function POST(req) {
     //    Passing redis lets the speaker route to Fireworks if a
     //    fine-tune has been activated, with automatic Groq fallback.
     const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics);
-    const { innerThought: thought1, response: candidate } = parseMonologue(rawCandidate);
+    const { innerThought: thought1, response: candidate, uncertain: uncertain1 } = parseMonologue(rawCandidate);
 
     // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
     //    passed in so recently-penalized phrases trip the filter without
@@ -257,6 +275,7 @@ export async function POST(req) {
 
     let finalResponse = candidate;
     let innerThought  = thought1;
+    let finalUncertain = uncertain1;
     let finalGauntlet = gauntletResult;
     let retried       = false;
     // For DPO: the candidate the gauntlet caught + why, preserved so we
@@ -287,7 +306,7 @@ export async function POST(req) {
       };
 
       const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics);
-      const { innerThought: thought2, response: retry } = parseMonologue(rawRetry);
+      const { innerThought: thought2, response: retry, uncertain: uncertain2 } = parseMonologue(rawRetry);
 
       const retryHeuristic = heuristicCheck(retry, dynamicBanned);
       const retryGauntlet  = retryHeuristic.authentic
@@ -297,6 +316,7 @@ export async function POST(req) {
       if (retryGauntlet.pass) {
         finalResponse = retry;
         innerThought  = thought2;
+        finalUncertain = uncertain2;
         finalGauntlet = retryGauntlet;
       } else {
         finalResponse = await generateFallback(
@@ -304,6 +324,7 @@ export async function POST(req) {
           "Say as little as possible. One sentence. Be present. Nothing more.",
         );
         innerThought  = null;
+        finalUncertain = null;
         finalGauntlet = retryGauntlet;
       }
     }
@@ -326,39 +347,29 @@ export async function POST(req) {
             withheldCandidate, debtCall, activeAgenda, activeThreshold,
             currentRegister, currentAuthorial, ripeSeed,
             feltState, reasoningTrace,
+            { userId },
           ),
-          runMetacognition(finalResponse, innerThought, redis, USER_ID),
+          runMetacognition(finalResponse, innerThought, redis, userId, finalUncertain),
 
-          // Record the structured episode — the substrate for Gamma,
-          // arc detection, and future learning loops.
-          recordEpisode(redis, USER_ID, {
+          recordEpisode(redis, userId, {
             userMsg:   lastUser,
             reply:     finalResponse,
             feltState,
             mood:      currentMood,
           }),
 
-          // Record whether this exchange passed the gauntlet — the
-          // meta-register reads this to surface self-observation.
-          recordGauntletOutcome(redis, USER_ID, {
+          recordGauntletOutcome(redis, userId, {
             pass:     finalGauntlet.pass,
             failures: finalGauntlet.failures,
           }),
 
-          // Feed the gauntlet's quoted phrases back into the heuristic
-          // filter. The immune system learns.
           ...(finalGauntlet.failures || []).map(f => {
             const phrase = extractPhraseFromFailure(f);
-            return phrase ? recordBannedPhrase(redis, USER_ID, phrase) : Promise.resolve();
+            return phrase ? recordBannedPhrase(redis, userId, phrase) : Promise.resolve();
           }),
 
-          // DPO preference pair — only log when a clean retry exists.
-          // finalGauntlet.pass means the retry was accepted, and the
-          // only way finalResponse differs from the original candidate
-          // is if it was regenerated. Fallback-length replies don't
-          // count — the breaker there is structural, not preference.
           (rejectedCandidate && finalGauntlet.pass && finalResponse !== rejectedCandidate)
-            ? recordPreferencePair(redis, USER_ID, {
+            ? recordPreferencePair(redis, userId, {
                 context:         recentMessages,
                 rejected:        rejectedCandidate,
                 rejectedReasons,
@@ -368,7 +379,7 @@ export async function POST(req) {
               })
             : Promise.resolve(),
 
-          logExchange(redis, USER_ID, {
+          logExchange(redis, userId, {
             messages,
             feltState,
             innerThought,
@@ -482,4 +493,76 @@ Output only the response text. No <think> block needed for this — it's not tha
   // Strip any stray <think> block if the model wrote one anyway.
   text = text.replace(/<think>[\s\S]*?<\/think>\s*/i, "").trim();
   return text;
+}
+
+// ─── Unified cognition ────────────────────────────────────────────────────────
+//
+// Collapses the triple-core into a single interpreter call — only used
+// when UNIFIED_COGNITION is set (i.e., post-SFT, when the speaker has
+// been trained on triple-core-generated data and can carry integration
+// on its own). Produces a felt-state in the same shape the speaker
+// expects, so no downstream code cares which path ran.
+
+async function runUnifiedCognition({ memory, recentMessages, currentMood, pragmatics, reasoningTrace }) {
+  const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
+  const soulLine = memory?.soul ? memory.soul.slice(0, 300) : "";
+  const traceLine = reasoningTrace?.current ? reasoningTrace.current.slice(0, 200) : "";
+
+  const prompt = `You are Gabriella's interpretive layer. Read the moment once, from all angles at once — emotional, relational, temporal — and return a single integrated felt-state.
+
+Last message: "${lastUser}"
+Pragmatic weight: ${pragmatics?.weight ?? "?"} (${pragmatics?.act || "?"})
+Current mood: ${currentMood}
+${soulLine ? `Your soul: ${soulLine}` : ""}
+${traceLine ? `What you've been turning over: ${traceLine}` : ""}
+
+Return ONLY JSON matching this shape. Keep charge/emotional/want/resist concise (≤ 18 words each). Omit notice/edge when genuinely null.
+
+{
+  "temperature": "<closed|terse|present|open>",
+  "length":      "<very short|short|medium|long>",
+  "charge":      "<what landed, 1 phrase>",
+  "emotional":   "<what you're feeling>",
+  "want":        "<what you want to do>",
+  "resist":      "<what you're pulling against>",
+  "notice":      "<something you noticed that hasn't been named, or null>",
+  "edge":        "<what's underneath, or null>"
+}`;
+
+  try {
+    const result = await pickClient().chat.completions.create({
+      model: premiumModel(),
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
+      max_tokens: 400,
+    });
+    const raw = (result.choices[0].message.content || "").trim().replace(/```(?:json)?/g, "").trim();
+    const feltState = JSON.parse(raw);
+    return {
+      feltState,
+      alpha: { feltState },
+      beta:  { feltState },
+      gamma: { feltState },
+      consensus: "unified",
+    };
+  } catch (err) {
+    console.warn(`unified cognition failed, falling back to defaults: ${err?.message || err}`);
+    const feltState = {
+      temperature: "present",
+      length:      "short",
+      charge:      "something landed",
+      emotional:   "here",
+      want:        "meet them",
+      resist:      "performance",
+      notice:      null,
+      edge:        null,
+    };
+    return {
+      feltState,
+      alpha: { feltState },
+      beta:  { feltState },
+      gamma: { feltState },
+      consensus: "unified-fallback",
+    };
+  }
 }

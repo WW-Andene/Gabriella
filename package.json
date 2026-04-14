@@ -14,7 +14,9 @@
     "ingest-reddit-finalize":"node --env-file=.env.local scripts/ingest-reddit.js --finalize",
     "ingest-reddit-push":    "node --env-file=.env.local scripts/ingest-reddit.js --finalize --push",
     "export-training":       "node --env-file=.env.local scripts/export.js",
-    "push-training":         "node --env-file=.env.local scripts/export.js --push"
+    "push-training":         "node --env-file=.env.local scripts/export.js --push",
+    "self-eval":             "node --env-file=.env.local scripts/self-eval.js",
+    "self-eval-quick":       "node --env-file=.env.local scripts/self-eval.js --scenarios 8"
   },
   "dependencies": {
     "next": "14.2.0",
