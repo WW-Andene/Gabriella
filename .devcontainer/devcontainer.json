@@ -1,0 +1,47 @@
+{
+  "name": "Gabriella",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
+  "postCreateCommand": "npm install && bash .devcontainer/setup-env.sh",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Next.js dev server",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "files.exclude": {
+          "**/.next": true,
+          "node_modules": true
+        }
+      },
+      "extensions": [
+        "dbaeumer.vscode-eslint"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "GROQ_API_KEY": "${localEnv:GROQ_API_KEY}",
+    "GROQ_API_KEY_2": "${localEnv:GROQ_API_KEY_2}",
+    "GROQ_API_KEY_3": "${localEnv:GROQ_API_KEY_3}",
+    "GROQ_API_KEY_4": "${localEnv:GROQ_API_KEY_4}",
+    "GROQ_API_KEY_5": "${localEnv:GROQ_API_KEY_5}",
+    "UPSTASH_REDIS_REST_URL": "${localEnv:UPSTASH_REDIS_REST_URL}",
+    "UPSTASH_REDIS_REST_TOKEN": "${localEnv:UPSTASH_REDIS_REST_TOKEN}",
+    "UPSTASH_VECTOR_REST_URL": "${localEnv:UPSTASH_VECTOR_REST_URL}",
+    "UPSTASH_VECTOR_REST_TOKEN": "${localEnv:UPSTASH_VECTOR_REST_TOKEN}",
+    "CRON_SECRET": "${localEnv:CRON_SECRET}",
+    "FIREWORKS_API_KEY": "${localEnv:FIREWORKS_API_KEY}",
+    "FIREWORKS_ACCOUNT_ID": "${localEnv:FIREWORKS_ACCOUNT_ID}",
+    "FIREWORKS_BASE_MODEL": "${localEnv:FIREWORKS_BASE_MODEL}",
+    "AUTO_FINETUNE": "${localEnv:AUTO_FINETUNE}",
+    "AUTO_FINETUNE_MIN_EXAMPLES": "${localEnv:AUTO_FINETUNE_MIN_EXAMPLES}",
+    "AUTO_FINETUNE_MIN_DAYS_BETWEEN": "${localEnv:AUTO_FINETUNE_MIN_DAYS_BETWEEN}",
+    "TOGETHER_API_KEY": "${localEnv:TOGETHER_API_KEY}",
+    "LEARNING_WEBHOOK_URL": "${localEnv:LEARNING_WEBHOOK_URL}",
+    "GABRIELLA_PREMIUM_MODEL": "${localEnv:GABRIELLA_PREMIUM_MODEL}",
+    "GABRIELLA_FAST_MODEL": "${localEnv:GABRIELLA_FAST_MODEL}"
+  }
+}
