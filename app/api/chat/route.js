@@ -42,6 +42,7 @@ import { runTripleCore }                                    from "../../../lib/g
 import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
+import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -92,6 +93,7 @@ export async function POST(req) {
       chronology,
       currentArc,
       recurrence,
+      reasoningTrace,
     } = await buildGabriella(messages);
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
@@ -129,6 +131,10 @@ export async function POST(req) {
       chronology,
       arc:           currentArc,
       recurrence,
+      // Interior continuity — every core sees what she has been turning
+      // over across turns, so interpretation is a continuation, not a
+      // cold start.
+      reasoningTrace,
     });
 
     // 3a. Upgrade the linguistics block with the full felt-state. Kept for
@@ -140,10 +146,29 @@ export async function POST(req) {
     //     up the current mood palette without a second parameter.
     const taggedFeltState = { ...feltState, _mood: currentMood };
 
-    // 4. Speaker receives felt-state + messages — no identity, no soul.
+    // 3c. Deliberation — the thinking layer. Produces structured cognition:
+    //     actual chain-of-thought, the decision she's making, any initiative
+    //     she's bringing, linking to earlier turns, self-critique. The
+    //     speaker receives this in its prompt and writes the response the
+    //     thinking implies, instead of generating from a felt-state alone.
+    //     This is what makes her think instead of react.
+    const deliberation = await deliberate({
+      feltState:       taggedFeltState,
+      memory,
+      trace:           reasoningTrace,
+      recentMessages,
+      currentRegister,
+      currentMood,
+      questionEval,
+      activeAgenda,
+      activeThreshold,
+      ripeSeed,
+    });
+
+    // 4. Speaker receives felt-state + deliberation + messages.
     //    Passing redis lets the speaker route to Fireworks if a
     //    fine-tune has been activated, with automatic Groq fallback.
-    const rawCandidate = await speak(taggedFeltState, recentMessages, redis);
+    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation);
     const { innerThought: thought1, response: candidate } = parseMonologue(rawCandidate);
 
     // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
@@ -189,7 +214,7 @@ export async function POST(req) {
         resist: `${taggedFeltState.resist}. ${constraintBullets}`,
       };
 
-      const rawRetry = await speak(constrainedFeltState, recentMessages, redis);
+      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation);
       const { innerThought: thought2, response: retry } = parseMonologue(rawRetry);
 
       const retryHeuristic = heuristicCheck(retry, dynamicBanned);
@@ -228,6 +253,7 @@ export async function POST(req) {
             messages, finalResponse, memory,
             withheldCandidate, debtCall, activeAgenda, activeThreshold,
             currentRegister, currentAuthorial, ripeSeed,
+            feltState, reasoningTrace,
           ),
           runMetacognition(finalResponse, innerThought, redis, USER_ID),
 
