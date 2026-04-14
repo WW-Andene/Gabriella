@@ -65,8 +65,16 @@ fi
 
 ok ".env.local exists"
 ok "GROQ_API_KEY present"
-if grep -q '^GROQ_API_KEY_2=' .env.local; then ok "GROQ_API_KEY_2 present (multi-key pool active)"; fi
-if grep -q '^GROQ_API_KEY_3=' .env.local; then ok "GROQ_API_KEY_3 present"; fi
+GROQ_COUNT=1
+for i in 2 3 4 5 6 7 8 9 10; do
+  if grep -q "^GROQ_API_KEY_${i}=" .env.local; then
+    GROQ_COUNT=$((GROQ_COUNT + 1))
+  fi
+done
+ok "Groq pool size: ${GROQ_COUNT} key(s)"
+if [ "$GROQ_COUNT" -ge 4 ]; then
+  ok "Pool has dedicated core lanes + round-robin bank"
+fi
 if grep -q '^FIREWORKS_API_KEY=' .env.local && grep -q '^FIREWORKS_ACCOUNT_ID=' .env.local; then
   ok "Fireworks credentials present (--push will upload)"
 else
