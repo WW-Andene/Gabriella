@@ -44,9 +44,10 @@ import { recordGauntletOutcome }                            from "../../../lib/g
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
 import { premiumModel, unifiedCognition }                   from "../../../lib/gabriella/models.js";
-import { pickClient, withKeyRotation }                      from "../../../lib/gabriella/groqPool.js";
+import { pickClient, withKeyRotation, poolStats }           from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
-import { logError }                                         from "../../../lib/gabriella/debugLog.js";
+import { logError, logWarn }                                from "../../../lib/gabriella/debugLog.js";
+import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/gabriella/fireworks.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -186,17 +187,24 @@ export async function POST(req) {
     }
 
     // 3. Cognition — triple-core by default; collapsed to a single-pass
-    //    unified interpretation if UNIFIED_COGNITION is set. Unified mode
-    //    is for AFTER a strong SFT has been activated: the cores served
-    //    their purpose generating multi-angle training data, and at
-    //    inference a trained speaker can carry integration alone.
+    //    unified interpretation if UNIFIED_COGNITION is set, OR if the
+    //    Groq pool is fully exhausted (dead keys). In the latter case,
+    //    unified cognition falls back through to Fireworks automatically.
+    const poolLive = poolStats().aliveCount > 0;
+    const useUnified = unifiedCognition() || !poolLive;
+    if (!poolLive) {
+      logWarn("chat", "Groq pool fully dead — using unified cognition via Fireworks", {
+        pool: poolStats(),
+      }).catch(() => {});
+    }
+
     const {
       feltState,
       alpha: alphaResult,
       beta:  betaResult,
       gamma: gammaResult,
       consensus,
-    } = unifiedCognition()
+    } = useUnified
       ? await runUnifiedCognition({
           memory, recentMessages, currentMood, pragmatics, reasoningTrace,
         })
@@ -455,6 +463,32 @@ function summarizeCoreResult(coreResult) {
 //     punctuation style.
 //   • A direct "meet this as a person meeting another person" instruction.
 
+function isPoolExhausted(err) {
+  const msg = String(err?.message || "");
+  return /all\s*\d*\s*groq\s*key/i.test(msg) || /pool.*dead/i.test(msg) || /organization.*restricted/i.test(msg);
+}
+
+// Generic Groq → Fireworks fallback wrapper for any chat completion call.
+async function completionWithFallback({ messages, groqModel, temperature, max_tokens, top_p, frequency_penalty, presence_penalty }) {
+  try {
+    const result = await withKeyRotation(client => client.chat.completions.create({
+      model: groqModel,
+      messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty,
+    }));
+    return result.choices[0].message.content;
+  } catch (err) {
+    if (!(isPoolExhausted(err) && fireworksReady())) throw err;
+    logWarn("chat", "Groq pool dead — falling back to Fireworks", err).catch(() => {});
+    const cfg = fireworksConfig();
+    const result = await chatCompletion({
+      apiKey: cfg.apiKey,
+      model:  cfg.baseModel,
+      messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty,
+    });
+    return result.choices?.[0]?.message?.content || "";
+  }
+}
+
 async function generateFastPath({ systemPrompt, recentMessages, pragmatics, currentMood }) {
   const reg = pragmatics?.register || {};
   const lengthTarget =
@@ -483,8 +517,8 @@ Respond the way a real person responds to ${pragmatics.act === "phatic" ? "a gre
 
 Output only the response text. No <think> block needed for this — it's not that kind of moment.`;
 
-  const result = await withKeyRotation(client => client.chat.completions.create({
-    model: premiumModel(),
+  const text0 = await completionWithFallback({
+    groqModel: premiumModel(),
     messages: [
       { role: "system", content: systemPrompt + fastDirective },
       ...recentMessages.slice(-6),
@@ -494,9 +528,9 @@ Output only the response text. No <think> block needed for this — it's not tha
     top_p:             0.92,
     frequency_penalty: 0.3,
     presence_penalty:  0.3,
-  }));
+  });
 
-  let text = result.choices[0].message.content.trim();
+  let text = (text0 || "").trim();
   // Strip any stray <think> block if the model wrote one anyway.
   text = text.replace(/<think>[\s\S]*?<\/think>\s*/i, "").trim();
   return text;
@@ -537,13 +571,13 @@ Return ONLY JSON matching this shape. Keep charge/emotional/want/resist concise 
 }`;
 
   try {
-    const result = await withKeyRotation(client => client.chat.completions.create({
-      model: premiumModel(),
+    const raw0 = await completionWithFallback({
+      groqModel: premiumModel(),
       messages: [{ role: "user", content: prompt }],
       temperature: 0.7,
       max_tokens: 400,
-    }));
-    const raw = (result.choices[0].message.content || "").trim().replace(/```(?:json)?/g, "").trim();
+    });
+    const raw = (raw0 || "").trim().replace(/```(?:json)?/g, "").trim();
     const feltState = JSON.parse(raw);
     return {
       feltState,
