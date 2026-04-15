@@ -220,6 +220,7 @@ export async function POST(req) {
       retried, rejectedCandidate, rejectedReasons,
       consensus, alpha: alphaResult, beta: betaResult, gamma: gammaResult,
       turnKnobs, substrateDelta,
+      toolResult,
     } = turnResult;
 
     const encoder  = new TextEncoder();
@@ -229,11 +230,19 @@ export async function POST(req) {
         for (let i = 0; i < fragments.length; i++) {
           await streamString(fragments[i], controller, encoder, cadence.perCharMs);
           if (i < fragments.length - 1) {
-            // Inter-fragment newline so the client renders a visible
-            // break; then the computed pause before next fragment.
             controller.enqueue(encoder.encode("\n\n"));
             await sleep(pauses[i]);
           }
+        }
+
+        // Phase D: emit tool result as a sidecar marker line the client
+        // splits off from the response text. Uses a rare delimiter
+        // (unit-separator U+001F) so there's no collision with natural
+        // prose.
+        if (toolResult) {
+          controller.enqueue(encoder.encode(
+            `\u001F__TOOL__${JSON.stringify(toolResult)}\u001F`,
+          ));
         }
         controller.close();
 

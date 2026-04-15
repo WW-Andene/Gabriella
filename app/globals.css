@@ -195,6 +195,33 @@ html, body {
   animation: fadeUp 0.3s ease both;
 }
 
+/* Tool chip — Phase D. Small pill that appears under her message when
+   she actually performed an action (pinned, set a reminder). */
+.g-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  background: rgba(255, 175, 70, 0.09);
+  border: 1px solid rgba(255, 175, 70, 0.25);
+  color: rgba(255, 195, 120, 0.88);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  animation: fadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: 0.12s;
+  user-select: none;
+}
+.g-tool-chip__icon {
+  font-size: 12px;
+  line-height: 1;
+  filter: drop-shadow(0 0 4px rgba(255, 175, 70, 0.3));
+}
+.g-tool-chip__label {
+  line-height: 1;
+}
+
 /* Reduce motion respectfully. */
 @media (prefers-reduced-motion: reduce) {
   .g-bubble,
@@ -205,7 +232,8 @@ html, body {
   .g-status-ember,
   .g-header-title,
   .g-typing-dots span,
-  .g-error {
+  .g-error,
+  .g-tool-chip {
     animation: none !important;
   }
   .g-caret { opacity: 0.6; }

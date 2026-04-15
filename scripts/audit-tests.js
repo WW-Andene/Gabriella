@@ -1316,6 +1316,116 @@ console.log("\n# Organic-timing fixes");
     `sampled=${sampled}, pauseMax=${pauseMax}`);
 }
 
+// ─── Phase D: tools (pin + remind) ──────────────────────────────────────────
+
+console.log("\n# Phase D tools");
+
+{
+  const tools = await import("../lib/gabriella/tools.js");
+  const { parseNaturalTime } = tools;
+
+  // Relative time parsers.
+  const now = new Date("2025-06-15T10:00:00Z").getTime();
+  assert("parse 'in 30 minutes'",
+    parseNaturalTime("in 30 minutes", now) === now + 30 * 60_000);
+  assert("parse 'in 2 hours'",
+    parseNaturalTime("in 2 hours", now) === now + 2 * 3_600_000);
+  assert("parse 'in an hour'",
+    parseNaturalTime("in an hour", now) === now + 3_600_000);
+  assert("parse 'in a few hours'",
+    parseNaturalTime("in a few hours", now) === now + 3 * 3_600_000);
+  assert("parse 'tomorrow'",
+    parseNaturalTime("tomorrow", now) > now + 20 * 3_600_000 &&
+    parseNaturalTime("tomorrow", now) < now + 36 * 3_600_000);
+  assert("parse 'tomorrow at 3pm' lands on 15:00",
+    new Date(parseNaturalTime("tomorrow at 3pm", now)).getUTCHours() === 15 - new Date(now).getTimezoneOffset() / 60 ||
+    new Date(parseNaturalTime("tomorrow at 3pm", now)).getHours() === 15);
+  assert("parse garbage returns null",
+    parseNaturalTime("sometime later maybe", now) === null);
+
+  // Fake redis for pin + scheduled storage.
+  const store = new Map();
+  const lists = new Map();
+  const fakeRedis = {
+    async get(k)   { return store.get(k) ?? null; },
+    async set(k,v) { store.set(k, v); return "OK"; },
+    async del(k)   { store.delete(k); lists.delete(k); return 1; },
+    async lpush(k, ...vals) {
+      const list = lists.get(k) || [];
+      for (const v of vals) list.unshift(v);
+      lists.set(k, list);
+      return list.length;
+    },
+    async ltrim(k, start, end) {
+      const list = lists.get(k) || [];
+      lists.set(k, list.slice(start, end + 1));
+      return "OK";
+    },
+    async lrange(k, start, end) {
+      const list = lists.get(k) || [];
+      return list.slice(start, end + 1);
+    },
+  };
+
+  // Pin tool
+  {
+    const r = await tools.executeTool({ tool: "pin", args: { what: "I start therapy next Tuesday" } },
+      { redis: fakeRedis, userId: "u1" });
+    assert("pin tool succeeds", r.ok === true && r.tool === "pin",
+      `result: ${JSON.stringify(r)}`);
+
+    const pinned = await tools.loadPinned(fakeRedis, "u1");
+    assert("pinned item persisted",
+      pinned.length === 1 && pinned[0].text.includes("therapy"),
+      `pinned: ${JSON.stringify(pinned)}`);
+
+    // Dedupe
+    const r2 = await tools.executeTool({ tool: "pin", args: { what: "I start therapy next Tuesday" } },
+      { redis: fakeRedis, userId: "u1" });
+    assert("pin dedupe marks duplicate",
+      r2.ok && r2.duplicate === true);
+  }
+
+  // Remind tool
+  {
+    const r = await tools.executeTool({ tool: "remind", args: { what: "call mom", when: "in 2 hours" } },
+      { redis: fakeRedis, userId: "u1" });
+    assert("remind tool succeeds", r.ok === true && r.tool === "remind" && r.humanWhen,
+      `result: ${JSON.stringify(r)}`);
+
+    const scheduled = await tools.loadScheduledThoughts(fakeRedis, "u1");
+    assert("reminder persisted to scheduled list",
+      scheduled.length === 1 && scheduled[0].text === "call mom",
+      `scheduled: ${JSON.stringify(scheduled)}`);
+  }
+
+  // Invalid remind: past time
+  {
+    const r = await tools.executeTool({ tool: "remind", args: { what: "x", when: "garbage" } },
+      { redis: fakeRedis, userId: "u1" });
+    assert("remind with unparseable time fails gracefully",
+      r.ok === false && /parse/i.test(r.reason));
+  }
+
+  // Drain scheduled: nothing due yet → no drain
+  {
+    const r = await tools.drainDueScheduledThoughts(fakeRedis, "u1");
+    assert("no drain when nothing due", r.drained === 0);
+  }
+
+  // Drain scheduled: force-due by passing future now
+  {
+    const future = Date.now() + 3 * 3_600_000;
+    const r = await tools.drainDueScheduledThoughts(fakeRedis, "u1", future);
+    assert("drain moves due thought to pendingThoughts",
+      r.drained === 1);
+    const pending = JSON.parse(await fakeRedis.get("u1:pendingThoughts") || "[]");
+    assert("pendingThoughts now contains the reminder",
+      pending.length === 1 && pending[0].origin === "tool:remind" && pending[0].text.includes("call mom"),
+      `pending: ${JSON.stringify(pending)}`);
+  }
+}
+
 // ─── Multi-provider pool (Groq + Cerebras + Gemini) ─────────────────────────
 
 console.log("\n# Multi-provider pool");

@@ -1,6 +1,31 @@
 "use client";
 import { useState, useRef, useEffect, useMemo } from "react";
 
+// Tool-result chip. Small affordance that lands under her message when
+// she actually DID something — pinned an item, set a reminder. Visual
+// confirmation that the action landed, not just the text of it.
+function ToolChip({ tool }) {
+  if (!tool || !tool.ok) return null;
+  let icon = "";
+  let label = "";
+  if (tool.tool === "pin") {
+    icon = "📌";
+    label = tool.duplicate ? "already pinned" : "pinned";
+  } else if (tool.tool === "remind") {
+    icon = "⏰";
+    label = `reminder set — ${tool.humanWhen || ""}`;
+  } else {
+    icon = "✓";
+    label = tool.tool;
+  }
+  return (
+    <div className="g-tool-chip" title={tool.text || ""}>
+      <span className="g-tool-chip__icon" aria-hidden="true">{icon}</span>
+      <span className="g-tool-chip__label">{label}</span>
+    </div>
+  );
+}
+
 // Paper-plane send icon — inline SVG, inherits currentColor so hover/disabled
 // states from the button are picked up automatically.
 function SendIcon() {
@@ -34,6 +59,26 @@ function splitIntoFragments(text) {
   return parts.length ? parts : [""];
 }
 
+// Phase D: extract the sidecar tool-result line from the stream.
+// Server wraps a JSON tool-result payload in U+001F separators at
+// the very end of the stream so we can split it off cleanly without
+// letting it appear in any rendered bubble.
+const TOOL_DELIM = "\u001F__TOOL__";
+function extractToolResult(streamText) {
+  const idx = streamText.indexOf(TOOL_DELIM);
+  if (idx === -1) return { text: streamText, tool: null };
+  const before = streamText.slice(0, idx);
+  const after  = streamText.slice(idx + TOOL_DELIM.length);
+  const endIdx = after.indexOf("\u001F");
+  if (endIdx === -1) return { text: before, tool: null };
+  const payload = after.slice(0, endIdx);
+  try {
+    return { text: before, tool: JSON.parse(payload) };
+  } catch {
+    return { text: before, tool: null };
+  }
+}
+
 export default function Home() {
   const [messages, setMessages]     = useState([]);
   const [streaming, setStreaming]   = useState("");      // raw streamed text for the current assistant turn
@@ -56,10 +101,13 @@ export default function Home() {
   }, []);
 
   // Derived: assistant bubbles for the CURRENT streaming turn (if any).
-  const streamingBubbles = useMemo(
-    () => (streaming ? splitIntoFragments(streaming) : []),
-    [streaming],
-  );
+  // Strip any tool-result sidecar from the preview — it's not visible
+  // text, just metadata that lands in the chip after finalize.
+  const streamingBubbles = useMemo(() => {
+    if (!streaming) return [];
+    const { text } = extractToolResult(streaming);
+    return splitIntoFragments(text);
+  }, [streaming]);
 
   const send = async () => {
     if (!input.trim() || loading) return;
@@ -129,17 +177,21 @@ export default function Home() {
       }
       setBetweenFragments(false);
 
-      // Finalize — commit the accumulated text as N bubbles.
-      const bubbles = splitIntoFragments(full);
+      // Finalize — strip any tool-result sidecar, then commit the
+      // accumulated text as N bubbles + an optional tool chip on the
+      // last bubble.
+      const { text: bubbleText, tool } = extractToolResult(full);
+      const bubbles = splitIntoFragments(bubbleText);
       if (bubbles.length === 0 || bubbles.every(b => !b)) {
-        // Server closed with no content — surface a soft error rather
-        // than committing an empty assistant bubble.
         setError("she didn't quite land that one. try again?");
       } else {
-        setMessages([
-          ...newMessages,
-          ...bubbles.map(content => ({ role: "assistant", content })),
-        ]);
+        const assistantBubbles = bubbles.map((content, i, arr) => ({
+          role: "assistant",
+          content,
+          // Attach the tool chip to the LAST bubble only.
+          tool: (tool && i === arr.length - 1) ? tool : null,
+        }));
+        setMessages([...newMessages, ...assistantBubbles]);
       }
       setStreaming("");
     } catch (err) {
@@ -291,6 +343,7 @@ export default function Home() {
               >
                 {m.content}
                 {m.streaming && <span className="g-caret" aria-hidden="true" />}
+                {m.tool && <ToolChip tool={m.tool} />}
               </div>
             </div>
           );
