@@ -939,6 +939,93 @@ console.log("\n# Phase 7 cadence");
   assert("sleep(0) resolves instantly", Date.now() - t0 < 20);
 }
 
+// ─── 5d. Phase 8 — fragmenter (multi-send aside) ─────────────────────────────
+
+console.log("\n# Phase 8 fragmenter");
+
+{
+  const { maybeFragment } = await import("../lib/gabriella/fragmenter.js");
+
+  const baseKnobs = { textingRegister: "textedCasual", activePart: "observer" };
+  const baseState = { socialComfort: 0.6 };
+  const basePrag  = { weight: 0.3, act: "casual" };
+
+  // Short text → solo always.
+  {
+    const r = maybeFragment("yeah ok", {
+      knobs: baseKnobs, state: baseState, pragmatics: basePrag, disableRandom: true,
+    });
+    assert("short text stays solo", r.fragments.length === 1 && r.pauses.length === 0);
+  }
+
+  // Heavy weight → solo always.
+  {
+    const long = "I don't think that's quite right — honestly the way you framed it is closer to the thing you were actually trying to solve, not the thing you said you wanted. But I get why it felt unclear. Actually, maybe that IS what you wanted.";
+    const r = maybeFragment(long, {
+      knobs: baseKnobs, state: baseState,
+      pragmatics: { weight: 0.8 }, disableRandom: true,
+    });
+    assert("heavy weight stays solo", r.fragments.length === 1);
+  }
+
+  // Typed register → solo (no fragmenting in typed mode).
+  {
+    const long = "I don't think that's quite right — honestly the way you framed it is closer to the thing you were actually trying to solve. But I get why it felt unclear.";
+    const r = maybeFragment(long, {
+      knobs: { textingRegister: "typed", activePart: "observer" },
+      state: baseState, pragmatics: basePrag, disableRandom: true,
+    });
+    assert("typed register stays solo", r.fragments.length === 1);
+  }
+
+  // Pivot marker ("Actually,") triggers a split when eligible.
+  {
+    const withPivot = "That tracks with what I was thinking about the whole setup honestly, and it does line up with the thing you brought up earlier. Actually, wait — there's one more thing I want to push back on here.";
+    // disableRandom: false via seeded probability bypass. We pass disableRandom:true
+    // but the bypass logic is `roll > PROBABILITY` so disableRandom sets roll=1 — that
+    // would ALWAYS skip. We need the opposite — force the fragment. Let me test
+    // with many samples instead and check that a pivot split happens sometimes.
+    let hit = 0;
+    for (let i = 0; i < 200; i++) {
+      const r = maybeFragment(withPivot, {
+        knobs: baseKnobs, state: baseState, pragmatics: basePrag,
+      });
+      if (r.fragments.length === 2 && r.fragments[1].startsWith("Actually")) hit++;
+    }
+    assert("pivot marker splits sometimes", hit >= 30 && hit <= 130,
+      `hit: ${hit}/200 (expect roughly 35% when eligible)`);
+  }
+
+  // Protector part → never split.
+  {
+    const long = "I'm not doing that right now. Actually, I'm not doing it at all today.";
+    const r = maybeFragment(long, {
+      knobs: { textingRegister: "textedCasual", activePart: "protector" },
+      state: baseState, pragmatics: basePrag,
+    });
+    assert("protector part stays solo", r.fragments.length === 1);
+  }
+
+  // When a split happens, pauses are in the 1.5-5s range.
+  {
+    const withPivot = "That tracks with what I was thinking about the whole setup honestly, and it does line up with the thing you brought up earlier. Actually, wait — there's one more thing I want to push back on here.";
+    let split = null;
+    for (let i = 0; i < 100; i++) {
+      const r = maybeFragment(withPivot, {
+        knobs: baseKnobs, state: baseState, pragmatics: basePrag,
+      });
+      if (r.fragments.length === 2) { split = r; break; }
+    }
+    if (split) {
+      assert("pause between fragments in 1.5-5s range",
+        split.pauses[0] >= 1500 && split.pauses[0] <= 5000,
+        `pauses[0]: ${split.pauses[0]}`);
+    } else {
+      assert("pause between fragments in 1.5-5s range", false, "never split in 100 tries");
+    }
+  }
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");

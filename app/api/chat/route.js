@@ -52,6 +52,7 @@ import { shape }                                            from "../../../lib/g
 import { computeKnobs }                                     from "../../../lib/gabriella/knobs.js";
 import { loadSubstrateDelta }                               from "../../../lib/gabriella/substrateEvolution.js";
 import { computeCadence, sleep }                            from "../../../lib/gabriella/cadence.js";
+import { maybeFragment }                                    from "../../../lib/gabriella/fragmenter.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -386,6 +387,9 @@ export async function POST(req) {
     //    + pragmatic weight + response length. Heavy / weighty turns get
     //    a longer pause before the first character streams ("she's
     //    thinking"). Light exchanges stay responsive (~300ms).
+    //    Phase 8: consider splitting into natural fragment-sends. Most
+    //    turns stay whole; on eligible casual turns a short aside may
+    //    follow the main response with a 2-5s pause.
     const cadence = computeCadence({
       state:          affectState,
       pragmatics,
@@ -395,11 +399,25 @@ export async function POST(req) {
       textingRegister: turnKnobs?.textingRegister || "typed",
     });
 
+    const { fragments, pauses } = maybeFragment(finalResponse, {
+      knobs:      turnKnobs,
+      pragmatics,
+      state:      affectState,
+    });
+
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         await sleep(cadence.preDelayMs);
-        await streamString(finalResponse, controller, encoder, cadence.perCharMs);
+        for (let i = 0; i < fragments.length; i++) {
+          await streamString(fragments[i], controller, encoder, cadence.perCharMs);
+          if (i < fragments.length - 1) {
+            // Inter-fragment newline so the client renders a visible
+            // break; then the computed pause before next fragment.
+            controller.enqueue(encoder.encode("\n\n"));
+            await sleep(pauses[i]);
+          }
+        }
         controller.close();
 
         // 8. Background — fire-and-forget after the client is served.
