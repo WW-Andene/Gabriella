@@ -1026,6 +1026,85 @@ console.log("\n# Phase 8 fragmenter");
   }
 }
 
+// ─── 5e. Phase 9 — delivery (webhook push gating) ────────────────────────────
+
+console.log("\n# Phase 9 delivery");
+
+{
+  const { shouldDeliver, buildPayload } = await import("../lib/gabriella/delivery.js");
+
+  // No config → skip.
+  assert("no config → skip",
+    shouldDeliver({ config: null }).reason === "no_config");
+
+  // Disabled → skip.
+  assert("disabled → skip",
+    shouldDeliver({ config: { enabled: false, webhookUrl: "https://x.com/y" } }).reason === "disabled");
+
+  // No URL → skip.
+  assert("no webhook url → skip",
+    shouldDeliver({ config: { enabled: true, webhookUrl: "" } }).reason === "no_webhook_url");
+
+  // Non-https → skip.
+  assert("non-https webhook → skip",
+    shouldDeliver({
+      config: { enabled: true, webhookUrl: "http://insecure.example/hook" },
+    }).reason === "webhook_not_https");
+
+  // Cooldown active → skip.
+  assert("within cooldown → skip",
+    shouldDeliver({
+      config:  { enabled: true, webhookUrl: "https://ok.example/h", minGapMs: 3600000 },
+      lastAt:  Date.now() - 60000,
+      now:     Date.now(),
+    }).reason === "within_cooldown");
+
+  // Cooldown elapsed → allowed.
+  assert("cooldown elapsed → ok",
+    shouldDeliver({
+      config:  { enabled: true, webhookUrl: "https://ok.example/h", minGapMs: 3600000 },
+      lastAt:  Date.now() - 4000000,
+      now:     Date.now(),
+    }).ok === true);
+
+  // Quiet hours (22-8 UTC) — 23:00 UTC should be quiet.
+  {
+    const quietNow = new Date("2025-01-01T23:00:00Z").getTime();
+    assert("quiet hours blocks delivery",
+      shouldDeliver({
+        config: { enabled: true, webhookUrl: "https://ok.example/h", quietHours: { start: 22, end: 8 } },
+        lastAt: 0,
+        now:    quietNow,
+      }).reason === "quiet_hours");
+  }
+
+  // Quiet hours (22-8 UTC) — 15:00 UTC should be fine.
+  {
+    const okNow = new Date("2025-01-01T15:00:00Z").getTime();
+    assert("outside quiet hours → ok",
+      shouldDeliver({
+        config: { enabled: true, webhookUrl: "https://ok.example/h", quietHours: { start: 22, end: 8 } },
+        lastAt: 0,
+        now:    okNow,
+      }).ok === true);
+  }
+
+  // buildPayload shape.
+  {
+    const p = buildPayload({
+      userId: "u1", thought: "I wanted to follow up on that thing.",
+      charge: "wanting-to-return", origin: "initiation",
+    });
+    assert("buildPayload has required fields",
+      p.userId === "u1" &&
+      p.thought.includes("follow up") &&
+      p.charge === "wanting-to-return" &&
+      p.origin === "initiation" &&
+      typeof p.timestamp === "string",
+      `payload: ${JSON.stringify(p)}`);
+  }
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
