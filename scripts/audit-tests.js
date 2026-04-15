@@ -579,6 +579,78 @@ console.log("\n# Phase 4 shaping (post-generation transforms)");
     const result = shape("I think it was the timing.", null);
     assert("shape with null knobs still runs safely", typeof result === "string" && result.length > 0);
   }
+
+  // 10. Phase 6.3 — texting-register transforms.
+  {
+    const { applyTextingRegister } = await import("../lib/gabriella/shaping.js");
+
+    // typed register → no change.
+    const typed = { textingRegister: "typed" };
+    assert(
+      "typed register leaves text alone",
+      applyTextingRegister("Yeah, that tracks. Definitely.", typed) ===
+        "Yeah, that tracks. Definitely.",
+    );
+
+    // textedLight — drops period from bare ack.
+    const light = { textingRegister: "textedLight" };
+    assert(
+      "textedLight drops trailing period on bare ack",
+      applyTextingRegister("okay.", light) === "okay",
+    );
+    assert(
+      "textedLight leaves full sentence alone",
+      applyTextingRegister("Okay, that makes sense.", light) === "Okay, that makes sense.",
+    );
+
+    // textedCasual — lowercase starts + shortenings + ack-period drop.
+    const casual = { textingRegister: "textedCasual" };
+    {
+      const out = applyTextingRegister("Probably tomorrow. Though it depends.", casual);
+      assert(
+        "textedCasual lowercases sentence starts",
+        out === "probs tomorrow. tho it depends.",
+        `got: "${out}"`,
+      );
+    }
+    assert(
+      "textedCasual preserves acronym at sentence start",
+      applyTextingRegister("NYC is wild.", casual) === "NYC is wild.",
+    );
+    assert(
+      "textedCasual preserves mid-sentence proper nouns",
+      applyTextingRegister("It was in Paris.", casual) === "it was in Paris.",
+    );
+    assert(
+      "textedCasual preserves 'I' self-reference",
+      applyTextingRegister("I don't know.", casual) === "I don't know.",
+    );
+
+    // textedTired — all of above plus "I" → "i" and extra shortenings.
+    const tired = { textingRegister: "textedTired" };
+    {
+      const out = applyTextingRegister("I don't know. Probably later.", tired);
+      assert(
+        "textedTired lowercases I and applies idk",
+        out === "idk. probs later",
+        `got: "${out}"`,
+      );
+    }
+    assert(
+      "textedTired lowercases contractions",
+      applyTextingRegister("I'm tired.", tired) === "i'm tired",
+    );
+
+    // shape() integrates the texting pipeline.
+    {
+      const result = shape("Probably okay. Because yeah.", { signatureDensity: 0.3, disfluencyBudget: 0.03, textingRegister: "textedCasual" });
+      assert(
+        "shape() pipeline applies texting transforms",
+        result.includes("probs") && result.includes("cause"),
+        `result: "${result}"`,
+      );
+    }
+  }
 }
 
 // ─── 5e. Phase 5 substrate evolution (meta-loop) ──────────────────────────────
