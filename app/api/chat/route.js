@@ -46,6 +46,7 @@ import { deliberate }                                       from "../../../lib/g
 import { premiumModel, unifiedCognition }                   from "../../../lib/gabriella/models.js";
 import { pickClient }                                       from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
+import { logError }                                         from "../../../lib/gabriella/debugLog.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -413,7 +414,13 @@ export async function POST(req) {
 
   } catch (err) {
     console.error("Chat route error:", err);
-    return new Response(JSON.stringify({ error: "internal error" }), {
+    // Surface in /dev debug log so the user can diagnose without SSH'ing
+    // into Vercel logs.
+    logError("chat", "chat route crashed", err).catch(() => {});
+    return new Response(JSON.stringify({
+      error: "internal error",
+      detail: err?.message || String(err),
+    }), {
       status:  500,
       headers: { "Content-Type": "application/json" },
     });

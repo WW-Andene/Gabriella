@@ -50,9 +50,12 @@ export default function DevPage() {
   const [secret, setSecret]   = useState("");
   const [booted, setBooted]   = useState(false);
   const [status, setStatus]   = useState(null);
+  const [logs,   setLogs]     = useState(null);
+  const [tab,    setTab]      = useState("dashboard"); // "dashboard" | "logs"
   const [error,  setError]    = useState(null);
   const [notice, setNotice]   = useState(null);
   const [busy,   setBusy]     = useState(false);
+  const [logLevel, setLogLevel] = useState("all");
 
   // Load secret from localStorage on first render.
   useEffect(() => {
@@ -108,13 +111,26 @@ export default function DevPage() {
     }
   }, [secret, call]);
 
+  const refreshLogs = useCallback(async () => {
+    if (!secret) return;
+    try {
+      const qs = logLevel !== "all" ? `?level=${logLevel}&limit=200` : "?limit=200";
+      const res = await call("/api/debug/logs" + qs);
+      if (res.ok) setLogs(res.data);
+    } catch {}
+  }, [secret, call, logLevel]);
+
   // Initial + periodic refresh.
   useEffect(() => {
     if (!secret) return;
     refresh();
-    const id = setInterval(refresh, 30_000);
+    if (tab === "logs") refreshLogs();
+    const id = setInterval(() => {
+      refresh();
+      if (tab === "logs") refreshLogs();
+    }, 15_000);
     return () => clearInterval(id);
-  }, [secret, refresh]);
+  }, [secret, refresh, refreshLogs, tab]);
 
   const doAction = useCallback(async (url, { method = "GET", successMsg, body } = {}) => {
     setBusy(true);
@@ -192,8 +208,52 @@ export default function DevPage() {
           </div>
         </div>
 
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid #22222e" }}>
+          <button
+            onClick={() => setTab("dashboard")}
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              padding: "8px 12px", fontSize: 13, color: tab === "dashboard" ? "#fff" : "#8a8a99",
+              borderBottom: tab === "dashboard" ? "2px solid #4a6aff" : "2px solid transparent",
+              marginBottom: -1,
+            }}
+          >Dashboard</button>
+          <button
+            onClick={() => { setTab("logs"); refreshLogs(); }}
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              padding: "8px 12px", fontSize: 13, color: tab === "logs" ? "#fff" : "#8a8a99",
+              borderBottom: tab === "logs" ? "2px solid #4a6aff" : "2px solid transparent",
+              marginBottom: -1,
+            }}
+          >Debug logs{logs?.byLevel?.error ? ` (${logs.byLevel.error})` : ""}</button>
+        </div>
+
         {error  && <div style={css.error}>{error}</div>}
         {notice && <div style={css.success}>{notice}</div>}
+
+        {tab === "logs" && (
+          <LogsView
+            logs={logs}
+            level={logLevel}
+            setLevel={setLogLevel}
+            onRefresh={refreshLogs}
+            onClear={async () => {
+              if (!confirm("Clear all debug logs?")) return;
+              await doAction("/api/debug/logs", { method: "DELETE", successMsg: "Logs cleared." });
+              refreshLogs();
+            }}
+            onTestWrite={async () => {
+              await doAction("/api/debug/logs", { method: "POST", successMsg: "Test entry written." });
+              refreshLogs();
+            }}
+          />
+        )}
+
+        {tab !== "dashboard" ? null : (
+          <>
+        {/* keep dashboard content in fragment */}
 
         {/* ─── Health banner ───────────────────────────────────────────── */}
         {status?.health && (() => {
@@ -388,10 +448,86 @@ export default function DevPage() {
         </details>
 
         <p style={{ ...css.subtitle, textAlign: "center", marginTop: 24 }}>
-          Status updates every 30 seconds. Mutations refresh instantly.
+          Status refreshes every 15 seconds. Mutations refresh instantly.
         </p>
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+// ─── Logs view ────────────────────────────────────────────────────────────────
+
+function LogsView({ logs, level, setLevel, onRefresh, onClear, onTestWrite }) {
+  if (!logs) return <div style={css.card}><div style={css.subtitle}>loading…</div></div>;
+
+  const entries = logs.entries || [];
+  const levelColor = {
+    error: "#f87171",
+    warn:  "#fbbf24",
+    info:  "#60a5fa",
+  };
+
+  return (
+    <>
+      <div style={css.card}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <strong style={{ fontSize: 13 }}>{logs.count} entries</strong>
+          {Object.entries(logs.byLevel || {}).map(([lvl, n]) => (
+            <span key={lvl} style={{ fontSize: 12, color: levelColor[lvl] || "#ccc" }}>
+              {lvl}: {n}
+            </span>
+          ))}
+          <span style={{ flex: 1 }} />
+          <select
+            value={level}
+            onChange={(e) => setLevel(e.target.value)}
+            style={{ ...css.input, width: "auto", padding: "4px 8px" }}
+          >
+            <option value="all">all levels</option>
+            <option value="error">error only</option>
+            <option value="warn">warn</option>
+            <option value="info">info</option>
+          </select>
+          <button style={css.btn} onClick={onRefresh}>↻</button>
+          <button style={css.btn} onClick={onTestWrite}>test</button>
+          <button style={css.btnD} onClick={onClear}>Clear</button>
+        </div>
+      </div>
+
+      {entries.length === 0 && (
+        <div style={css.card}>
+          <div style={css.subtitle}>No log entries. Logs are written automatically when the chat route or API endpoints fail.</div>
+        </div>
+      )}
+
+      {entries.map((e, idx) => (
+        <div key={idx} style={{ ...css.card, borderLeft: `3px solid ${levelColor[e.level] || "#555"}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8a8a99", marginBottom: 6 }}>
+            <span>
+              <span style={{ color: levelColor[e.level] || "#ccc", fontWeight: 600, textTransform: "uppercase" }}>
+                {e.level}
+              </span>
+              {" · "}
+              <span style={{ color: "#ccc" }}>{e.source}</span>
+            </span>
+            <span>{new Date(e.t).toLocaleString()}</span>
+          </div>
+          <div style={{ fontSize: 13, marginBottom: e.detail ? 6 : 0 }}>{e.message}</div>
+          {e.detail && (
+            <details>
+              <summary style={{ fontSize: 11, color: "#8a8a99", cursor: "pointer" }}>detail</summary>
+              <pre style={{ ...css.code, marginTop: 6 }}>
+                {typeof e.detail === "string"
+                  ? e.detail
+                  : JSON.stringify(e.detail, null, 2)}
+              </pre>
+            </details>
+          )}
+        </div>
+      ))}
+    </>
   );
 }
 

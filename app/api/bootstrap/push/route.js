@@ -26,6 +26,7 @@ import {
   readArchivedBundle,
   uploadToFireworks,
 } from "../../../../lib/gabriella/learning.js";
+import { logError, logInfo } from "../../../../lib/gabriella/debugLog.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -109,6 +110,7 @@ export async function GET(req) {
         message: "Upload succeeded. The dataset is live on Fireworks and the next /api/learn run can train on it.",
       });
     } catch (fwErr) {
+      logError("bootstrap-push", `Fireworks failed at ${fwErr.step || "?"}`, fwErr).catch(() => {});
       return json({
         ok:              false,
         archiveKey,
@@ -124,6 +126,7 @@ export async function GET(req) {
       }, 502);
     }
   } catch (err) {
+    logError("bootstrap-push", "endpoint crashed", err).catch(() => {});
     return json({
       ok:    false,
       error: String(err.message || err),
