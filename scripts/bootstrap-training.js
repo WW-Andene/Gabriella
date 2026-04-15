@@ -24,6 +24,7 @@ import { SCENARIOS, CATEGORIES } from "../lib/gabriella/bootstrap-scenarios.js";
 import { generateBatch } from "../lib/gabriella/bootstrap.js";
 import { archiveToUpstash, uploadToFireworks, savePendingJob, recordLearningEvent } from "../lib/gabriella/learning.js";
 import { createSftJob, fireworksConfig } from "../lib/gabriella/fireworks.js";
+import { loadFinetuneConfig, applyOverrides } from "../lib/gabriella/finetuneConfig.js";
 import { poolSize } from "../lib/gabriella/groqPool.js";
 
 const OUTPUT_DIR = "./training-data";
@@ -35,7 +36,10 @@ const OUTPUT_PATH = path.join(OUTPUT_DIR, OUTPUT_FILE);
 function parseArgs(argv) {
   const args = {
     push: false, scenarios: null, category: null, concurrency: null,
-    finetune: false, epochs: 3, loraRank: 16, learningRate: 0.0001,
+    finetune: false,
+    // null = use loaded finetune config (env/upstash/default). Only set when
+    // explicitly overridden via CLI flag.
+    epochs: null, loraRank: null, learningRate: null, baseModel: null, batchSize: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -47,6 +51,8 @@ function parseArgs(argv) {
     else if (a === "--epochs"      && argv[i + 1]) { args.epochs       = Number(argv[++i]); }
     else if (a === "--lora-rank"   && argv[i + 1]) { args.loraRank     = Number(argv[++i]); }
     else if (a === "--lr"          && argv[i + 1]) { args.learningRate = Number(argv[++i]); }
+    else if (a === "--base-model"  && argv[i + 1]) { args.baseModel    = String(argv[++i]); }
+    else if (a === "--batch-size"  && argv[i + 1]) { args.batchSize    = Number(argv[++i]); }
   }
   return args;
 }
@@ -207,21 +213,36 @@ async function main() {
     console.log(`Launching SFT job on ${fwDatasetId}...`);
     const cfg = fireworksConfig();
     try {
-      const displayName = `gabriella-${new Date().toISOString().slice(0, 10)}-${fwDatasetId.slice(-8)}`;
+      // Load the full finetune config (defaults ← env ← upstash overrides),
+      // then apply any CLI flag overrides for this invocation.
+      const base = await loadFinetuneConfig(redis);
+      const { config: ft, sources } = applyOverrides(base, {
+        epochs:       args.epochs,
+        loraRank:     args.loraRank,
+        learningRate: args.learningRate,
+        baseModel:    args.baseModel,
+        batchSize:    args.batchSize,
+      });
+
+      const displayName = `${ft.displayNamePrefix}-${new Date().toISOString().slice(0, 10)}-${fwDatasetId.slice(-8)}`;
       const job = await createSftJob({
         apiKey:       cfg.apiKey,
         accountId:    cfg.accountId,
         datasetId:    fwDatasetId,
-        baseModel:    cfg.baseModel,
-        epochs:       args.epochs,
-        loraRank:     args.loraRank,
-        learningRate: args.learningRate,
+        baseModel:    ft.baseModel,
+        epochs:       ft.epochs,
+        loraRank:     ft.loraRank,
+        learningRate: ft.learningRate,
+        batchSize:    ft.batchSize,
         displayName,
       });
       console.log(`  ✓ SFT job launched: ${job.jobId}`);
       console.log(`    state:       ${job.state}`);
-      console.log(`    baseModel:   ${cfg.baseModel}`);
-      console.log(`    config:      epochs=${args.epochs}, loraRank=${args.loraRank}, lr=${args.learningRate}`);
+      console.log(`    baseModel:   ${ft.baseModel}  (${sources.baseModel})`);
+      console.log(`    epochs:      ${ft.epochs}  (${sources.epochs})`);
+      console.log(`    loraRank:    ${ft.loraRank}  (${sources.loraRank})`);
+      console.log(`    learningRate:${ft.learningRate}  (${sources.learningRate})`);
+      if (ft.batchSize) console.log(`    batchSize:   ${ft.batchSize}  (${sources.batchSize})`);
 
       // Save to Redis so /api/learn/watch picks it up on the next hourly run.
       const pending = {

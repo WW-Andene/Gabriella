@@ -189,6 +189,49 @@ console.log("\n# persistent emotional state decay");
   assert("cold fold lowers openness", folded.openness < warmState.openness);
 }
 
+// ─── 5b. finetune config layering ─────────────────────────────────────────────
+
+console.log("\n# finetune config (defaults ← env ← upstash ← overrides)");
+
+{
+  const { loadFinetuneConfig, applyOverrides, getFinetuneConfigSchema } =
+    await import("../lib/gabriella/finetuneConfig.js");
+
+  // Fake redis that returns a preset upstash override.
+  const mockRedis = {
+    _store: { "gabriella:finetuneConfig": JSON.stringify({ epochs: 5, loraRank: 32 }) },
+    get: async function(k) { return this._store[k] ?? null; },
+  };
+
+  const base = await loadFinetuneConfig(mockRedis, {});
+  assert("upstash overrides default", base.config.epochs === 5 && base.sources.epochs === "upstash");
+  assert("upstash overrides default (loraRank)", base.config.loraRank === 32 && base.sources.loraRank === "upstash");
+  assert("default when no override", base.config.learningRate === 0.0001 && base.sources.learningRate === "default");
+
+  // Env takes priority over defaults but upstash beats env.
+  const envOnly = await loadFinetuneConfig({ get: async () => null }, {
+    FINETUNE_EPOCHS: "7",
+    FINETUNE_LEARNING_RATE: "0.00005",
+  });
+  assert("env takes priority over default", envOnly.config.epochs === 7 && envOnly.sources.epochs === "env");
+  assert("env respected for lr", envOnly.config.learningRate === 0.00005);
+
+  // Query-param override wins over everything.
+  const overridden = applyOverrides(base, { epochs: "10" });
+  assert("override beats upstash", overridden.config.epochs === 10 && overridden.sources.epochs === "override");
+
+  // Bounds checking.
+  const clamped = applyOverrides(base, { epochs: "9999" });
+  assert("out-of-bounds epochs clamped to max", clamped.config.epochs === 20);
+
+  const negative = applyOverrides(base, { loraRank: "-5" });
+  assert("out-of-bounds loraRank clamped to min", negative.config.loraRank === 1);
+
+  // Schema has all expected fields.
+  const schema = getFinetuneConfigSchema();
+  assert("schema has core fields", schema.epochs && schema.loraRank && schema.learningRate && schema.baseModel);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");

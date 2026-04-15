@@ -26,6 +26,7 @@ export const runtime     = "nodejs";
 import { Redis } from "@upstash/redis";
 import { createSftJob, fireworksConfig } from "../../../../lib/gabriella/fireworks.js";
 import { savePendingJob, recordLearningEvent } from "../../../../lib/gabriella/learning.js";
+import { loadFinetuneConfig, applyOverrides } from "../../../../lib/gabriella/finetuneConfig.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -101,10 +102,19 @@ export async function GET(req) {
   const url          = new URL(req.url);
   const shouldLaunch = url.searchParams.get("launch") === "1" || url.searchParams.get("launch") === "true";
   const datasetParam = url.searchParams.get("dataset");
-  const epochs       = Number(url.searchParams.get("epochs")       || 3);
-  const loraRank     = Number(url.searchParams.get("loraRank")     || 16);
-  const learningRate = Number(url.searchParams.get("learningRate") || 0.0001);
-  const baseModel    = url.searchParams.get("baseModel") || cfg.baseModel;
+
+  // Load the full config (defaults ← env ← upstash), then apply
+  // query-param overrides for this specific launch.
+  const base = await loadFinetuneConfig(redis);
+  const overrides = {
+    epochs:       url.searchParams.get("epochs"),
+    loraRank:     url.searchParams.get("loraRank"),
+    learningRate: url.searchParams.get("learningRate"),
+    baseModel:    url.searchParams.get("baseModel"),
+    batchSize:    url.searchParams.get("batchSize"),
+  };
+  const { config: finetune, sources } = applyOverrides(base, overrides);
+  const { epochs, loraRank, learningRate, baseModel, batchSize } = finetune;
 
   try {
     // Always fetch current state so the response is self-explanatory.
@@ -117,12 +127,13 @@ export async function GET(req) {
       return json({
         ok:       true,
         action:   "status",
-        baseModel,
+        finetuneConfig:        finetune,
+        finetuneConfigSources: sources,
         datasets,
         jobs,
         hint: Array.isArray(datasets) && datasets.length > 0
-          ? `To launch SFT on the newest dataset, append &launch=1 to this URL.`
-          : `No datasets yet — run /api/bootstrap/push first to upload one.`,
+          ? "To launch SFT on the newest dataset, append &launch=1. To tune hyperparameters, append &epochs=<N>&loraRank=<N>&learningRate=<F>. To persist those settings, use /api/fireworks/config instead."
+          : "No datasets yet — run /api/bootstrap/push first to upload one.",
       });
     }
 
@@ -161,6 +172,7 @@ export async function GET(req) {
       epochs,
       learningRate,
       loraRank,
+      batchSize,
       displayName,
     });
 
@@ -190,7 +202,8 @@ export async function GET(req) {
       action:         "launched",
       job:            pending,
       datasetUsed:    chosen,
-      trainingConfig: { baseModel, epochs, learningRate, loraRank },
+      trainingConfig: { baseModel, epochs, learningRate, loraRank, batchSize },
+      configSources:  sources,
       message:
         `SFT job launched. It will run in the background (~1-2 hours). ` +
         `The /api/learn/watch cron (hourly) polls it and activates the model when done.`,
