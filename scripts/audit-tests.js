@@ -852,6 +852,93 @@ console.log("\n# Phase 6 texting register");
     `rendered snippet: ${rendered.slice(0, 400)}`);
 }
 
+// ─── 5c. Phase 7 — cadence (pre-stream thinking delay) ───────────────────────
+
+console.log("\n# Phase 7 cadence");
+
+{
+  const { computeCadence, sleep } = await import("../lib/gabriella/cadence.js");
+
+  // Phatic → fast (200-400ms range with some modulation).
+  const phatic = computeCadence({
+    state:          { energy: 0.7, attention: 0.6 },
+    pragmatics:     { weight: 0.15, act: "phatic" },
+    responseLength: 12,
+  });
+  assert("phatic produces short pre-delay", phatic.preDelayMs >= 150 && phatic.preDelayMs <= 800,
+    `preDelayMs: ${phatic.preDelayMs}`);
+
+  // Heavy → long (cap at 5000).
+  const heavy = computeCadence({
+    state:          { energy: 0.7, attention: 0.5 },
+    pragmatics:     { weight: 0.85, act: "reflective" },
+    responseLength: 400,
+  });
+  assert("heavy weight produces longer pre-delay", heavy.preDelayMs >= 1000 && heavy.preDelayMs <= 5000,
+    `preDelayMs: ${heavy.preDelayMs}`);
+
+  // Low energy → slower streaming char speed.
+  const tired = computeCadence({
+    state:          { energy: 0.15, attention: 0.4 },
+    pragmatics:     { weight: 0.3 },
+    responseLength: 80,
+  });
+  assert("low energy pushes perChar max higher", tired.perCharMs.max >= 12,
+    `perCharMs.max: ${tired.perCharMs.max}`);
+
+  // Engaged → faster streaming.
+  const engaged = computeCadence({
+    state:          { energy: 0.85, attention: 0.85 },
+    pragmatics:     { weight: 0.5 },
+    responseLength: 120,
+  });
+  assert("engaged + attentive produces tighter charMin", engaged.perCharMs.min <= 4,
+    `perCharMs.min: ${engaged.perCharMs.min}`);
+
+  // preDelay always within bounds.
+  assert("preDelay capped at 5000ms", heavy.preDelayMs <= 5000);
+  assert("preDelay floored at 150ms", phatic.preDelayMs >= 150);
+
+  // Texting register shaves delay.
+  const typedDelay = computeCadence({
+    state: { energy: 0.7, attention: 0.6 },
+    pragmatics: { weight: 0.4 },
+    responseLength: 100,
+    textingRegister: "typed",
+  });
+  const casualDelay = computeCadence({
+    state: { energy: 0.7, attention: 0.6 },
+    pragmatics: { weight: 0.4 },
+    responseLength: 100,
+    textingRegister: "textedCasual",
+  });
+  // Can't compare exactly due to randomness, but over 5 samples the
+  // casual-mean should be meaningfully shorter. Simpler: sample multiple
+  // and compare means.
+  const means = (reg) => {
+    let sum = 0;
+    for (let i = 0; i < 30; i++) {
+      sum += computeCadence({
+        state: { energy: 0.7, attention: 0.6 },
+        pragmatics: { weight: 0.4 },
+        responseLength: 100,
+        textingRegister: reg,
+      }).preDelayMs;
+    }
+    return sum / 30;
+  };
+  const typedMean = means("typed");
+  const casualMean = means("textedCasual");
+  assert("textedCasual shaves average delay vs typed",
+    casualMean < typedMean,
+    `typedMean=${typedMean.toFixed(0)}, casualMean=${casualMean.toFixed(0)}`);
+
+  // sleep(0) resolves immediately.
+  const t0 = Date.now();
+  await sleep(0);
+  assert("sleep(0) resolves instantly", Date.now() - t0 < 20);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");

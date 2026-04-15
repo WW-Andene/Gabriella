@@ -51,6 +51,7 @@ import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/g
 import { shape }                                            from "../../../lib/gabriella/shaping.js";
 import { computeKnobs }                                     from "../../../lib/gabriella/knobs.js";
 import { loadSubstrateDelta }                               from "../../../lib/gabriella/substrateEvolution.js";
+import { computeCadence, sleep }                            from "../../../lib/gabriella/cadence.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -64,15 +65,16 @@ export const runtime     = "nodejs";
 // Small, human-feeling chunks — not pre-token streaming, but the illusion of
 // typing. The vetted response is complete before streaming begins.
 
-function streamString(text, controller, encoder) {
+function streamString(text, controller, encoder, perCharMs = { min: 4, max: 12 }) {
   return new Promise((resolve) => {
     let i = 0;
+    const spread = Math.max(0, perCharMs.max - perCharMs.min);
     function sendNext() {
       if (i >= text.length) { resolve(); return; }
       const chunkSize = Math.floor(Math.random() * 4) + 2;
       controller.enqueue(encoder.encode(text.slice(i, i + chunkSize)));
       i += chunkSize;
-      setTimeout(sendNext, Math.random() * 8 + 4);
+      setTimeout(sendNext, Math.random() * spread + perCharMs.min);
     }
     sendNext();
   });
@@ -148,10 +150,23 @@ export async function POST(req) {
         currentMood,
       });
 
+      // Phase 7: compute pre-stream thinking delay for the fast path.
+      // Phatic exchanges should feel responsive but not robotic —
+      // computeCadence produces 200-400ms here.
+      const fastCadence = computeCadence({
+        state:          affectState,
+        pragmatics,
+        responseLength: fastResponse.length,
+        isReentry:      false,
+        gapSinceLastTurnMs: 0,
+        textingRegister: "typed",
+      });
+
       const encoder  = new TextEncoder();
       const readable = new ReadableStream({
         async start(controller) {
-          await streamString(fastResponse, controller, encoder);
+          await sleep(fastCadence.preDelayMs);
+          await streamString(fastResponse, controller, encoder, fastCadence.perCharMs);
           controller.close();
 
           const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
@@ -367,10 +382,24 @@ export async function POST(req) {
     }
 
     // 7. Stream to client.
+    //    Phase 7: compute pre-stream thinking delay from organism state
+    //    + pragmatic weight + response length. Heavy / weighty turns get
+    //    a longer pause before the first character streams ("she's
+    //    thinking"). Light exchanges stay responsive (~300ms).
+    const cadence = computeCadence({
+      state:          affectState,
+      pragmatics,
+      responseLength: finalResponse.length,
+      isReentry:      false,
+      gapSinceLastTurnMs: 0,
+      textingRegister: turnKnobs?.textingRegister || "typed",
+    });
+
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
-        await streamString(finalResponse, controller, encoder);
+        await sleep(cadence.preDelayMs);
+        await streamString(finalResponse, controller, encoder, cadence.perCharMs);
         controller.close();
 
         // 8. Background — fire-and-forget after the client is served.
