@@ -283,8 +283,23 @@ export async function POST(req) {
     // Load substrateDelta here so BOTH speak() and shape() see the same
     // learned-signature layer for this turn.
     const substrateDelta = await loadSubstrateDelta(redis, userId).catch(() => null);
-    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
-    const { innerThought: thought1, response: rawResponse1, uncertain: uncertain1 } = parseMonologue(rawCandidate);
+    let rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
+    let parsed1 = parseMonologue(rawCandidate);
+
+    // Truncation recovery: if the model hit max_tokens mid-<think> and never
+    // emitted a visible response, retry once with a lifted token budget.
+    // Without this, the user sees an empty bubble or a mid-sentence cut on
+    // the comma where the hidden monologue got chopped.
+    if (parsed1.truncated || (!parsed1.response && parsed1.innerThought)) {
+      logWarn("chat", "speaker truncated inside <think>, retrying with expanded budget", {
+        thoughtLen: parsed1.innerThought?.length || 0,
+      }).catch(() => {});
+      const expandedFelt = { ...taggedFeltState, _tokenBoost: 400 };
+      rawCandidate = await speak(expandedFelt, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
+      parsed1 = parseMonologue(rawCandidate);
+    }
+
+    const { innerThought: thought1, response: rawResponse1, uncertain: uncertain1 } = parsed1;
 
     // 4a. Phase 4 — post-generation shaping pass. Applies knob-aware
     //     transforms: strips summary endings / residual banned phrases

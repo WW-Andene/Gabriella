@@ -1006,7 +1006,8 @@ console.log("\n# Phase 8 fragmenter");
     assert("protector part stays solo", r.fragments.length === 1);
   }
 
-  // When a split happens, pauses are in the 1.5-5s range.
+  // When a split happens, pauses are in the 900-2500ms range (tuned
+  // down from 1.5-5s after organic-timing feedback).
   {
     const withPivot = "That tracks with what I was thinking about the whole setup honestly, and it does line up with the thing you brought up earlier. Actually, wait — there's one more thing I want to push back on here.";
     let split = null;
@@ -1017,11 +1018,11 @@ console.log("\n# Phase 8 fragmenter");
       if (r.fragments.length === 2) { split = r; break; }
     }
     if (split) {
-      assert("pause between fragments in 1.5-5s range",
-        split.pauses[0] >= 1500 && split.pauses[0] <= 5000,
+      assert("pause between fragments in 900-2500ms range",
+        split.pauses[0] >= 900 && split.pauses[0] <= 2500,
         `pauses[0]: ${split.pauses[0]}`);
     } else {
-      assert("pause between fragments in 1.5-5s range", false, "never split in 100 tries");
+      assert("pause between fragments in 900-2500ms range", false, "never split in 100 tries");
     }
   }
 }
@@ -1171,6 +1172,99 @@ console.log("\n# Audit fixes — state + metacognition + soul drift");
   assert("updateSoul accepts substrateDelta parameter",
     typeof soul.updateSoul === "function" && soul.updateSoul.length >= 5,
     `updateSoul arity: ${soul.updateSoul?.length}`);
+}
+
+// ─── Organic-timing fixes (truncation recovery, cadence, pauses) ────────────
+
+console.log("\n# Organic-timing fixes");
+
+{
+  const { parseMonologue } = await import("../lib/gabriella/monologue.js");
+
+  // Unclosed <think> block → truncated=true, no visible leak.
+  {
+    const raw = "<think>\nI'm turning this over and trying to figure out what they actually";
+    const parsed = parseMonologue(raw);
+    assert("unclosed <think> is flagged truncated",
+      parsed.truncated === true &&
+      parsed.response === "" &&
+      parsed.innerThought.includes("turning this over"),
+      `parsed: ${JSON.stringify(parsed)}`);
+  }
+
+  // Fully formed response — not truncated.
+  {
+    const parsed = parseMonologue("<think>ok</think>Hello there.");
+    assert("well-formed <think> + response not truncated",
+      parsed.truncated === false && parsed.response === "Hello there.");
+  }
+
+  // No <think> tag at all but orphan tag fragments get cleaned.
+  {
+    const parsed = parseMonologue("Here's my reply. </think> extra");
+    assert("orphan closing tag stripped from bare response",
+      !parsed.response.includes("</think>") &&
+      parsed.response.includes("Here's my reply"),
+      `parsed.response: "${parsed.response}"`);
+  }
+
+  // Null / empty input safe.
+  {
+    const parsed = parseMonologue("");
+    assert("empty raw → empty response, not crashed",
+      parsed.response === "" && parsed.truncated === false);
+  }
+}
+
+{
+  const { computeCadence } = await import("../lib/gabriella/cadence.js");
+
+  // Ceiling lowered from 5000 → 3000.
+  const heavy = computeCadence({
+    state:          { energy: 0.5, attention: 0.4 },
+    pragmatics:     { weight: 0.9 },
+    responseLength: 800,
+  });
+  assert("heavy turn pre-delay capped at 3000ms",
+    heavy.preDelayMs <= 3000,
+    `preDelayMs: ${heavy.preDelayMs}`);
+
+  // Casual long response: length floor no longer kicks in below weight 0.4.
+  let maxCasualDelay = 0;
+  for (let i = 0; i < 30; i++) {
+    const c = computeCadence({
+      state:          { energy: 0.7, attention: 0.6 },
+      pragmatics:     { weight: 0.2 },
+      responseLength: 500,
+      textingRegister: "textedCasual",
+    });
+    if (c.preDelayMs > maxCasualDelay) maxCasualDelay = c.preDelayMs;
+  }
+  assert("casual long response no longer hits a length floor",
+    maxCasualDelay < 700,
+    `maxCasualDelay: ${maxCasualDelay}`);
+}
+
+{
+  const { maybeFragment } = await import("../lib/gabriella/fragmenter.js");
+  const withPivot = "That tracks with what I was thinking about the whole setup honestly, and it does line up with the thing you brought up earlier. Actually, wait — there's one more thing I want to push back on here.";
+
+  let pauseMax = 0;
+  let sampled = 0;
+  for (let i = 0; i < 200; i++) {
+    const r = maybeFragment(withPivot, {
+      knobs:      { textingRegister: "textedCasual", activePart: "observer" },
+      state:      { socialComfort: 0.6 },
+      pragmatics: { weight: 0.3, act: "casual" },
+    });
+    if (r.fragments.length === 2 && r.pauses.length === 1) {
+      sampled++;
+      if (r.pauses[0] > pauseMax) pauseMax = r.pauses[0];
+    }
+  }
+  assert("fragment pause never exceeds 2500ms ceiling",
+    sampled > 0 && pauseMax <= 2500,
+    `sampled=${sampled}, pauseMax=${pauseMax}`);
 }
 
 // ─── Multi-provider pool (Groq + Cerebras + Gemini) ─────────────────────────

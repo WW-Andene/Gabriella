@@ -40,14 +40,20 @@ export default function Home() {
   const [input, setInput]           = useState("");
   const [loading, setLoading]       = useState(false);
   const [thinking, setThinking]     = useState(false);   // pre-first-char (Phase 7 thinking delay window)
+  const [betweenFragments, setBetweenFragments] = useState(false);  // inter-fragment pause (Phase 8)
   const [error, setError]           = useState(null);
   const bottomRef                   = useRef(null);
   const abortRef                    = useRef(null);
   const inputRef                    = useRef(null);
+  const gapTimerRef                 = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming, thinking]);
+  }, [messages, streaming, thinking, betweenFragments]);
+
+  useEffect(() => () => {
+    if (gapTimerRef.current) clearTimeout(gapTimerRef.current);
+  }, []);
 
   // Derived: assistant bubbles for the CURRENT streaming turn (if any).
   const streamingBubbles = useMemo(
@@ -84,6 +90,20 @@ export default function Home() {
       const decoder = new TextDecoder();
       let full = "";
       let gotFirstByte = false;
+      // Inter-fragment detection: if we just received a "\n\n" AND no new
+      // chunks arrive for >250ms, treat it as a fragment boundary and
+      // show typing dots until the next chunk lands.
+      const armGapDetector = () => {
+        if (gapTimerRef.current) clearTimeout(gapTimerRef.current);
+        gapTimerRef.current = setTimeout(() => {
+          // Only activate the dots if the current stream tail looks like
+          // a fragment boundary (ends with blank line) AND there's
+          // already visible content.
+          if (/\n{2,}\s*$/.test(full) && full.trim().length > 0) {
+            setBetweenFragments(true);
+          }
+        }, 250);
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -95,14 +115,32 @@ export default function Home() {
         }
         full += chunk;
         setStreaming(full);
+        setBetweenFragments(false);           // any chunk cancels the dots
+        if (gapTimerRef.current) {
+          clearTimeout(gapTimerRef.current);
+          gapTimerRef.current = null;
+        }
+        if (/\n{2,}\s*$/.test(full)) armGapDetector();
       }
+
+      if (gapTimerRef.current) {
+        clearTimeout(gapTimerRef.current);
+        gapTimerRef.current = null;
+      }
+      setBetweenFragments(false);
 
       // Finalize — commit the accumulated text as N bubbles.
       const bubbles = splitIntoFragments(full);
-      setMessages([
-        ...newMessages,
-        ...bubbles.map(content => ({ role: "assistant", content })),
-      ]);
+      if (bubbles.length === 0 || bubbles.every(b => !b)) {
+        // Server closed with no content — surface a soft error rather
+        // than committing an empty assistant bubble.
+        setError("she didn't quite land that one. try again?");
+      } else {
+        setMessages([
+          ...newMessages,
+          ...bubbles.map(content => ({ role: "assistant", content })),
+        ]);
+      }
       setStreaming("");
     } catch (err) {
       if (err.name === "AbortError") return;
@@ -258,8 +296,11 @@ export default function Home() {
           );
         })}
 
-        {/* Typing-dots placeholder during the pre-first-byte thinking window. */}
-        {thinking && (
+        {/* Typing dots:
+              - during the pre-first-byte thinking window (Phase 7)
+              - during an inter-fragment pause (Phase 8) so the bubble
+                gap doesn't read as silence/abandonment. */}
+        {(thinking || betweenFragments) && (
           <div style={{
             display: "flex",
             justifyContent: "flex-start",
@@ -270,7 +311,7 @@ export default function Home() {
               background: "rgba(255,255,255,0.04)",
               border: "1px solid rgba(255,255,255,0.07)",
             }}>
-              <span className="g-typing-dots" aria-label="thinking">
+              <span className="g-typing-dots" aria-label={thinking ? "thinking" : "typing"}>
                 <span /><span /><span />
               </span>
             </div>
