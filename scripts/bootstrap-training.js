@@ -172,11 +172,20 @@ async function main() {
         filename,
         accountId: process.env.FIREWORKS_ACCOUNT_ID,
       });
-      console.log(`  ✓ Fireworks upload — dataset: ${fw.datasetId} (${fw.bytes} bytes)`);
+      console.log(`  ✓ Fireworks upload — dataset: ${fw.datasetId} via ${fw.flow || "?"} (${fw.bytes} bytes)`);
       console.log(`\n  The dataset is now available on Fireworks. The next /api/learn run`);
       console.log(`  (or AUTO_FINETUNE pipeline) can kick off SFT against it.`);
     } catch (err) {
-      console.log(`  ✗ Fireworks upload failed: ${err.message}`);
+      console.log(`  ✗ Fireworks upload failed`);
+      console.log(``);
+      // Print the full error — it now contains actionable guidance.
+      for (const line of (err.message || String(err)).split("\n")) {
+        console.log(`    ${line}`);
+      }
+      console.log(``);
+      console.log(`    Note: your training data is preserved in the Upstash archive above.`);
+      console.log(`    Once credentials / accountId are correct, re-run with --push`);
+      console.log(`    to upload it without regenerating.`);
     }
   } else {
     console.log(`  (Fireworks skipped — FIREWORKS_API_KEY + FIREWORKS_ACCOUNT_ID not set)`);
