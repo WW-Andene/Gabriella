@@ -452,6 +452,135 @@ console.log("\n# Phase 3 generation knobs (knobs.js)");
     pissed.directness > unsure.directness);
 }
 
+// ─── 5d. Phase 4 post-generation shaping ──────────────────────────────────────
+
+console.log("\n# Phase 4 shaping (post-generation transforms)");
+
+{
+  const {
+    shape,
+    stripSummaryEnding,
+    stripResidualBannedPhrases,
+    fixStartsWithI,
+    applyWordFamilySwaps,
+    normalizeSpacing,
+    safetyCheck,
+  } = await import("../lib/gabriella/shaping.js");
+
+  // 1. Summary-ending stripper
+  assert(
+    "strips 'does that make sense?' ending",
+    stripSummaryEnding("I think she meant well. Does that make sense?") ===
+      "I think she meant well.",
+  );
+  assert(
+    "strips 'I hope that helps' ending",
+    stripSummaryEnding("It's fine. I hope that helps.") === "It's fine.",
+  );
+  assert(
+    "leaves legitimate questions alone",
+    stripSummaryEnding("What were you thinking about?") === "What were you thinking about?",
+  );
+
+  // 2. Residual-banned-phrase stripper
+  {
+    const s = stripResidualBannedPhrases("Great question! The answer is complicated.");
+    assert("strips leading 'Great question'", s === "The answer is complicated.");
+  }
+  {
+    const s = stripResidualBannedPhrases("As an AI, I don't have feelings.");
+    assert("strips leading 'As an AI'", s === "I don't have feelings.");
+  }
+  {
+    const s = stripResidualBannedPhrases("The answer is yes.");
+    assert("leaves clean response alone", s === "The answer is yes.");
+  }
+
+  // 3. starts-with-I fixer (conservative)
+  assert(
+    "rewrites 'I think X.' → 'X, I think.'",
+    fixStartsWithI("I think it was the timing.") === "It was the timing, I think.",
+  );
+  assert(
+    "leaves 'I am' openers alone (too risky to rewrite)",
+    fixStartsWithI("I'm not sure about that.") === "I'm not sure about that.",
+  );
+
+  // 4. Word-family swaps (require signatureDensity >= 0.5)
+  {
+    const high = { signatureDensity: 0.7 };
+    assert(
+      "swaps 'ponder' → 'turn over' at high signature density",
+      applyWordFamilySwaps("I'll ponder it later.", high) === "I'll turn over it later.",
+    );
+    assert(
+      "strips 'truly' at high signature density",
+      applyWordFamilySwaps("That was truly a great day.", high) === "That was a great day.",
+    );
+  }
+  {
+    const low = { signatureDensity: 0.2 };
+    assert(
+      "no swap at low signature density",
+      applyWordFamilySwaps("I'll ponder it.", low) === "I'll ponder it.",
+    );
+  }
+
+  // 5. normalizeSpacing
+  assert(
+    "collapses double spaces",
+    normalizeSpacing("Hello  there.") === "Hello there.",
+  );
+  assert(
+    "removes space before punctuation",
+    normalizeSpacing("Yeah , okay.") === "Yeah, okay.",
+  );
+
+  // 6. safetyCheck
+  assert(
+    "reverts to original when transformed is empty",
+    safetyCheck("This is a normal response.", "") === "This is a normal response.",
+  );
+  assert(
+    "reverts when transformed is too short relative to original",
+    safetyCheck("This is a perfectly normal response that makes sense.", "ok") ===
+      "This is a perfectly normal response that makes sense.",
+  );
+  assert(
+    "keeps transformed when similar length",
+    safetyCheck("Original response here.", "Edited response here.") === "Edited response here.",
+  );
+
+  // 7. shape() master pipeline
+  {
+    const result = shape(
+      "Great question! I think the answer is complicated. Does that make sense?",
+      { signatureDensity: 0.7, disfluencyBudget: 0.05 },
+    );
+    // Should strip 'Great question', rewrite 'I think', strip summary ending.
+    assert(
+      "master pipeline strips + rewrites cleanly",
+      !result.includes("Great question") &&
+        !result.includes("Does that make sense") &&
+        result.length > 0,
+      `result: "${result}"`,
+    );
+  }
+
+  // 8. shape() preserves response when nothing to change.
+  {
+    const clean = "Yeah. That tracks.";
+    const result = shape(clean, { signatureDensity: 0.5, disfluencyBudget: 0.03 });
+    assert("shape preserves clean response", result === clean);
+  }
+
+  // 9. shape() with no knobs is safe.
+  {
+    const result = shape("I think it was the timing.", null);
+    assert("shape with null knobs still runs safely", typeof result === "string" && result.length > 0);
+  }
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
