@@ -331,6 +331,127 @@ console.log("\n# finetune config (defaults ← env ← upstash ← overrides)");
   assert("schema has core fields", schema.epochs && schema.loraRank && schema.learningRate && schema.baseModel);
 }
 
+// ─── 5c. Phase 3 generation knobs ─────────────────────────────────────────────
+
+console.log("\n# Phase 3 generation knobs (knobs.js)");
+
+{
+  const { computeKnobs, renderKnobsBlock } = await import("../lib/gabriella/knobs.js");
+
+  const baselineState = {
+    openness: 0.55, alertness: 0.65, care: 0.4, irritation: 0.05, warmth: 0.5,
+    energy: 0.75, attention: 0.6, socialComfort: 0.5,
+    updatedAt: Date.now(),
+  };
+  const neutralFelt = { temperature: "present", length: "short", charge: "okay", emotional: "here", want: "respond", resist: "performance" };
+
+  // 1. Default state → Observer-led.
+  const defaultKnobs = computeKnobs({ state: baselineState, feltState: neutralFelt, context: { pragmaticWeight: 0.3 } });
+  assert("default state gives Observer-led", defaultKnobs.activePart === "observer");
+
+  // 2. High irritation → Protector fires.
+  const irritated = computeKnobs({
+    state: { ...baselineState, irritation: 0.8 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.4 },
+  });
+  assert("high irritation triggers Protector", irritated.activePart === "protector");
+
+  // 3. userIsSmall → Older Sister.
+  const smallMoment = computeKnobs({
+    state: baselineState,
+    feltState: { ...neutralFelt, charge: "overwhelm tired" },
+    context: { pragmaticWeight: 0.5, userIsSmall: true },
+  });
+  assert("user-is-small triggers Older Sister", smallMoment.activePart === "older_sister");
+
+  // 4. needlerTrigger → Needler.
+  const needling = computeKnobs({
+    state: baselineState, feltState: neutralFelt,
+    context: { pragmaticWeight: 0.3, needlerTrigger: true },
+  });
+  assert("needler trigger fires Needler", needling.activePart === "needler");
+
+  // 5. Low energy → lower polish level.
+  const tired = computeKnobs({
+    state: { ...baselineState, energy: 0.2, attention: 0.4 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.3 },
+  });
+  const rested = computeKnobs({
+    state: { ...baselineState, energy: 0.9, attention: 0.85 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.5 },
+  });
+  assert(
+    "low energy lowers polish; high energy raises it",
+    tired.polishLevel < rested.polishLevel,
+    `tired=${tired.polishLevel.toFixed(3)} rested=${rested.polishLevel.toFixed(3)}`,
+  );
+
+  // 6. Delight sub-mode → Grice quantity "over".
+  const engaged = computeKnobs({
+    state: { ...baselineState, socialComfort: 0.75 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.7, topicInHyperfocus: true },
+  });
+  assert("engaged + hyperfocus → delight part + quantity=over",
+    engaged.activePart === "delight" && engaged.griceQuantity === "over");
+
+  // 7. Default → Grice quantity "under" (her signature).
+  assert("default Grice quantity is 'under'", defaultKnobs.griceQuantity === "under");
+
+  // 8. Signature density higher at higher comfort.
+  const comfortable = computeKnobs({
+    state: { ...baselineState, socialComfort: 0.85 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.5 },
+  });
+  const awkward = computeKnobs({
+    state: { ...baselineState, socialComfort: 0.2 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.5 },
+  });
+  assert("comfort raises signature density",
+    comfortable.signatureDensity > awkward.signatureDensity);
+
+  // 9. lexicalPush contains reach-for words.
+  assert("lexicalPush returns signature words at moderate density",
+    Array.isArray(comfortable.lexicalPush) && comfortable.lexicalPush.length > 0);
+
+  // 10. Low comfort + low energy → schema pressure activates.
+  const underPressure = computeKnobs({
+    state: { ...baselineState, energy: 0.25, socialComfort: 0.3 },
+    feltState: neutralFelt,
+    context: { pragmaticWeight: 0.4, userAskingAboutHer: true },
+  });
+  assert("low energy + low comfort + user-asking → emotional_deprivation schema fires",
+    underPressure.schemaPressure.active === "emotional_deprivation");
+
+  // 11. Schema pressure nil at high energy + high comfort.
+  assert("high energy + comfort → no schema pressure",
+    engaged.schemaPressure.active === null);
+
+  // 12. renderKnobsBlock produces usable text.
+  const rendered = renderKnobsBlock(defaultKnobs);
+  assert("renderKnobsBlock produces non-empty text for Observer default",
+    typeof rendered === "string" && rendered.length > 100);
+  assert("rendered block contains the section header",
+    rendered.includes("HOW YOU SPEAK THIS TURN"));
+
+  // 13. Directness higher at high comfort / irritation.
+  const pissed = computeKnobs({
+    state: { ...baselineState, irritation: 0.6, socialComfort: 0.8 },
+    feltState: neutralFelt, context: {},
+  });
+  const unsure = computeKnobs({
+    state: { ...baselineState, socialComfort: 0.2 },
+    feltState: neutralFelt, context: {},
+  });
+  assert("directness higher when comfortable or irritated",
+    pissed.directness > unsure.directness);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
