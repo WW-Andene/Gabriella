@@ -137,9 +137,11 @@ fi
 hr "Step 4 — bootstrap generation + Fireworks upload"
 
 BOOTSTRAP_ARGS=()
+FIREWORKS_CONFIGURED="no"
 if grep -q '^FIREWORKS_API_KEY=' .env.local && grep -q '^FIREWORKS_ACCOUNT_ID=' .env.local; then
-  BOOTSTRAP_ARGS+=("--push")
-  info "running with --push (will upload to Fireworks + archive to Upstash)"
+  BOOTSTRAP_ARGS+=("--push" "--finetune")
+  FIREWORKS_CONFIGURED="yes"
+  info "running with --push --finetune (upload to Fireworks + archive + launch SFT)"
 else
   info "running without upload (Fireworks env vars not set)"
 fi
@@ -170,18 +172,24 @@ printf '  examples:      %s\n' "$EXAMPLES_COUNT"
 if [ "$STEP4_BOOTSTRAP" = "ok" ] && [ "$EXAMPLES_COUNT" != "?" ] && [ "$EXAMPLES_COUNT" -gt 0 ]; then
   printf '\n'
   ok "training data written to training-data/bootstrap-cot.jsonl"
-  if [ ${#BOOTSTRAP_ARGS[@]} -gt 0 ]; then
-    ok "upload attempted — check the output above for ✓ Fireworks upload"
+  if [ "$FIREWORKS_CONFIGURED" = "yes" ]; then
+    ok "upload + SFT launch attempted — check output above for ✓ Fireworks / ✓ SFT"
     printf '\n'
-    info "Next: the weekly /api/learn cron will see this dataset on Monday 06:00 UTC."
-    info "If AUTO_FINETUNE=1, it will kick off the first SFT job automatically."
-    info "The hourly /api/learn/watch will then deploy + activate the fine-tune."
+    info "Training runs for ~1-2 hours on Fireworks servers."
+    info "The hourly /api/learn/watch cron will:"
+    info "  • Poll the SFT job status"
+    info "  • When COMPLETED, auto-deploy the LoRA adapter"
+    info "  • Activate it as Gabriella's speaker model"
+    info "  • Your chat will then run through the fine-tune (Groq as automatic fallback)"
+    printf '\n'
+    info "You can also poll manually at any time:"
+    info "  https://<your-app>.vercel.app/api/learn/watch?key=<CRON_SECRET>"
   else
     printf '\n'
-    info "Data generated but not uploaded. To upload now, set FIREWORKS_API_KEY"
+    info "Data generated but not uploaded. To upload + fine-tune, set FIREWORKS_API_KEY"
     info "and FIREWORKS_ACCOUNT_ID as Codespace secrets, rebuild the container,"
     info "and run this script again — or push manually with:"
-    info "  npm run bootstrap-training -- --push"
+    info "  npm run bootstrap-training -- --push --finetune"
   fi
 else
   printf '\n'

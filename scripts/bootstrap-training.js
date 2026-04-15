@@ -22,7 +22,8 @@ import path from "path";
 import { Redis } from "@upstash/redis";
 import { SCENARIOS, CATEGORIES } from "../lib/gabriella/bootstrap-scenarios.js";
 import { generateBatch } from "../lib/gabriella/bootstrap.js";
-import { archiveToUpstash, uploadToFireworks } from "../lib/gabriella/learning.js";
+import { archiveToUpstash, uploadToFireworks, savePendingJob, recordLearningEvent } from "../lib/gabriella/learning.js";
+import { createSftJob, fireworksConfig } from "../lib/gabriella/fireworks.js";
 import { poolSize } from "../lib/gabriella/groqPool.js";
 
 const OUTPUT_DIR = "./training-data";
@@ -32,13 +33,20 @@ const OUTPUT_PATH = path.join(OUTPUT_DIR, OUTPUT_FILE);
 // ─── Parse CLI args ──────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { push: false, scenarios: null, category: null, concurrency: null };
+  const args = {
+    push: false, scenarios: null, category: null, concurrency: null,
+    finetune: false, epochs: 3, loraRank: 16, learningRate: 0.0001,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--push" || a === "--upload") args.push = true;
-    else if (a === "--scenarios" && argv[i + 1]) { args.scenarios = Number(argv[++i]); }
-    else if (a === "--category"  && argv[i + 1]) { args.category  = String(argv[++i]); }
-    else if (a === "--concurrency" && argv[i + 1]) { args.concurrency = Number(argv[++i]); }
+    else if (a === "--finetune" || a === "--sft") args.finetune = true;
+    else if (a === "--scenarios"   && argv[i + 1]) { args.scenarios    = Number(argv[++i]); }
+    else if (a === "--category"    && argv[i + 1]) { args.category     = String(argv[++i]); }
+    else if (a === "--concurrency" && argv[i + 1]) { args.concurrency  = Number(argv[++i]); }
+    else if (a === "--epochs"      && argv[i + 1]) { args.epochs       = Number(argv[++i]); }
+    else if (a === "--lora-rank"   && argv[i + 1]) { args.loraRank     = Number(argv[++i]); }
+    else if (a === "--lr"          && argv[i + 1]) { args.learningRate = Number(argv[++i]); }
   }
   return args;
 }
@@ -166,19 +174,18 @@ async function main() {
   }
 
   // Fireworks if configured.
+  let fwDatasetId = null;
   if (process.env.FIREWORKS_API_KEY && process.env.FIREWORKS_ACCOUNT_ID) {
     try {
       const fw = await uploadToFireworks(jsonl, process.env.FIREWORKS_API_KEY, {
         filename,
         accountId: process.env.FIREWORKS_ACCOUNT_ID,
       });
+      fwDatasetId = fw.datasetId;
       console.log(`  ✓ Fireworks upload — dataset: ${fw.datasetId} via ${fw.flow || "?"} (${fw.bytes} bytes)`);
-      console.log(`\n  The dataset is now available on Fireworks. The next /api/learn run`);
-      console.log(`  (or AUTO_FINETUNE pipeline) can kick off SFT against it.`);
     } catch (err) {
       console.log(`  ✗ Fireworks upload failed`);
       console.log(``);
-      // Print the full error — it now contains actionable guidance.
       for (const line of (err.message || String(err)).split("\n")) {
         console.log(`    ${line}`);
       }
@@ -189,6 +196,71 @@ async function main() {
     }
   } else {
     console.log(`  (Fireworks skipped — FIREWORKS_API_KEY + FIREWORKS_ACCOUNT_ID not set)`);
+  }
+
+  // ─── Optional: also launch SFT ──────────────────────────────────────────
+  // With --finetune, immediately kick off a fine-tune on the dataset we
+  // just uploaded. The /api/learn/watch cron will then deploy + activate
+  // the resulting model when training completes.
+  if (args.finetune && fwDatasetId) {
+    console.log(``);
+    console.log(`Launching SFT job on ${fwDatasetId}...`);
+    const cfg = fireworksConfig();
+    try {
+      const displayName = `gabriella-${new Date().toISOString().slice(0, 10)}-${fwDatasetId.slice(-8)}`;
+      const job = await createSftJob({
+        apiKey:       cfg.apiKey,
+        accountId:    cfg.accountId,
+        datasetId:    fwDatasetId,
+        baseModel:    cfg.baseModel,
+        epochs:       args.epochs,
+        loraRank:     args.loraRank,
+        learningRate: args.learningRate,
+        displayName,
+      });
+      console.log(`  ✓ SFT job launched: ${job.jobId}`);
+      console.log(`    state:       ${job.state}`);
+      console.log(`    baseModel:   ${cfg.baseModel}`);
+      console.log(`    config:      epochs=${args.epochs}, loraRank=${args.loraRank}, lr=${args.learningRate}`);
+
+      // Save to Redis so /api/learn/watch picks it up on the next hourly run.
+      const pending = {
+        jobId:       job.jobId,
+        jobName:     job.jobName,
+        displayName,
+        datasetId:   fwDatasetId,
+        createdAt:   Date.now(),
+        state:       job.state || "PENDING",
+        baseModel:   cfg.baseModel,
+      };
+      await Promise.all([
+        savePendingJob(redis, USER_ID, pending),
+        recordLearningEvent(redis, USER_ID, {
+          kind:      "sft-launched-bootstrap",
+          jobId:     job.jobId,
+          displayName,
+          datasetId: fwDatasetId,
+          baseModel: cfg.baseModel,
+        }),
+      ]);
+
+      console.log(``);
+      console.log(`  Training runs on Fireworks servers (~1-2 hours).`);
+      console.log(`  The hourly /api/learn/watch cron polls the job and will`);
+      console.log(`  auto-deploy + activate the fine-tune when it completes.`);
+    } catch (err) {
+      console.log(`  ✗ SFT launch failed`);
+      console.log(``);
+      for (const line of (err.message || String(err)).split("\n")) {
+        console.log(`    ${line}`);
+      }
+      console.log(``);
+      console.log(`    Dataset is still uploaded — you can launch SFT manually later`);
+      console.log(`    via /api/fireworks/finetune?key=<SECRET>&launch=1`);
+    }
+  } else if (args.finetune && !fwDatasetId) {
+    console.log(``);
+    console.log(`  (SFT skipped — dataset wasn't uploaded to Fireworks)`);
   }
 }
 
