@@ -56,6 +56,15 @@ export default function DevPage() {
   const [notice, setNotice]   = useState(null);
   const [busy,   setBusy]     = useState(false);
   const [logLevel, setLogLevel] = useState("all");
+  // Bootstrap-run panel state
+  const [bootstrapState,   setBootstrapState]   = useState(null);    // server-reported state
+  const [bootstrapRunning, setBootstrapRunning] = useState(false);   // client loop active
+  const [bootstrapOpts,    setBootstrapOpts]    = useState({
+    category:   "all",
+    scenarios:  "",   // blank = all
+    chunkSize:  5,
+    concurrency: 3,
+  });
 
   // Load secret from localStorage on first render.
   useEffect(() => {
@@ -131,6 +140,85 @@ export default function DevPage() {
     }, 15_000);
     return () => clearInterval(id);
   }, [secret, refresh, refreshLogs, tab]);
+
+  // ─── Bootstrap chunked runner ────────────────────────────────────────────
+  // Kicks off a run, then loops continue-requests until done. Each chunk
+  // is <60s so each request fits inside Vercel's function cap. Client
+  // polls state between chunks.
+
+  const bootstrapStep = useCallback(async (action = "continue", body = {}) => {
+    const res = await call("/api/bootstrap/run", {
+      method: "POST",
+      body:   JSON.stringify({ action, ...body }),
+    });
+    if (res.ok) setBootstrapState(res.data.state || null);
+    return res;
+  }, [call]);
+
+  const bootstrapStart = useCallback(async () => {
+    setError(null);
+    setNotice(null);
+    const opts = bootstrapOpts;
+    const body = {
+      chunkSize:   Number(opts.chunkSize) || 5,
+      concurrency: Number(opts.concurrency) || 3,
+    };
+    if (opts.category && opts.category !== "all") body.category = opts.category;
+    const n = parseInt(opts.scenarios, 10);
+    if (Number.isFinite(n) && n > 0) body.scenarios = n;
+
+    const res = await bootstrapStep("start", body);
+    if (!res.ok) {
+      setError(`Failed to start: ${res.status} ${JSON.stringify(res.data)}`);
+      return;
+    }
+    setBootstrapRunning(true);
+    setNotice("Bootstrap started.");
+
+    // Loop continue-requests until done.
+    while (true) {
+      const cont = await bootstrapStep("continue", {
+        chunkSize: Number(opts.chunkSize) || 5,
+      });
+      if (!cont.ok) {
+        setError(`Chunk failed: ${cont.status} ${JSON.stringify(cont.data).slice(0, 300)}`);
+        break;
+      }
+      if (cont.data?.done) {
+        setNotice(
+          cont.data.archiveKey
+            ? `Done. Archived as ${cont.data.archiveKey.split(":").pop()}.`
+            : `Done. ${cont.data.state?.totalExamples || 0} examples kept.`
+        );
+        break;
+      }
+      // Tiny breather between chunks — prevents request pile-up and
+      // gives Redis a moment. Not strictly necessary.
+      await new Promise(r => setTimeout(r, 200));
+    }
+    setBootstrapRunning(false);
+    await refresh();
+  }, [bootstrapOpts, bootstrapStep, refresh]);
+
+  const bootstrapAbort = useCallback(async () => {
+    setBootstrapRunning(false);
+    await bootstrapStep("abort");
+    setNotice("Bootstrap aborted.");
+  }, [bootstrapStep]);
+
+  // Pick up any in-progress run on mount / refresh.
+  useEffect(() => {
+    if (!secret) return;
+    (async () => {
+      const res = await call("/api/bootstrap/run");
+      if (res.ok && res.data?.state) {
+        setBootstrapState(res.data.state);
+        if (res.data.state.status === "running") {
+          setBootstrapRunning(true);
+        }
+      }
+    })();
+  }, [secret, call]);
 
   const doAction = useCallback(async (url, { method = "GET", successMsg, body } = {}) => {
     setBusy(true);
@@ -321,10 +409,143 @@ export default function DevPage() {
           </div>
         </div>
 
+        {/* ─── Bootstrap runner ──────────────────────────────────────────── */}
+        <div style={css.card}>
+          <div style={css.cardTitle}>
+            Bootstrap training data
+            {bootstrapState?.status === "running" && <span style={{ ...css.pill("#60a5fa"), marginLeft: 8 }}>running</span>}
+            {bootstrapState?.status === "done"    && <span style={{ ...css.pill("#4ade80"), marginLeft: 8 }}>done</span>}
+          </div>
+
+          {!bootstrapRunning && (!bootstrapState || bootstrapState.status !== "running") && (
+            <>
+              <div style={{ ...css.grid2, marginBottom: 10 }}>
+                <div>
+                  <label style={css.label}>Category</label>
+                  <select
+                    style={css.input}
+                    value={bootstrapOpts.category}
+                    onChange={e => setBootstrapOpts({ ...bootstrapOpts, category: e.target.value })}
+                  >
+                    <option value="all">all</option>
+                    <option value="phatic">phatic</option>
+                    <option value="casual">casual</option>
+                    <option value="substantive">substantive</option>
+                    <option value="emotional">emotional</option>
+                    <option value="edge">edge</option>
+                    <option value="trash-talk">trash-talk</option>
+                    <option value="anger">anger</option>
+                    <option value="sharp-disagreement">sharp-disagreement</option>
+                    <option value="against-user">against-user</option>
+                    <option value="hurt">hurt</option>
+                    <option value="petty">petty</option>
+                    <option value="tough-love">tough-love</option>
+                    <option value="toxic-when-earned">toxic-when-earned</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={css.label}>Limit (blank = all)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    style={css.input}
+                    placeholder="e.g. 20 for a test run"
+                    value={bootstrapOpts.scenarios}
+                    onChange={e => setBootstrapOpts({ ...bootstrapOpts, scenarios: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={css.label}>Chunk size (per HTTP call)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="12"
+                    style={css.input}
+                    value={bootstrapOpts.chunkSize}
+                    onChange={e => setBootstrapOpts({ ...bootstrapOpts, chunkSize: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={css.label}>Concurrency (keys in pool)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    style={css.input}
+                    value={bootstrapOpts.concurrency}
+                    onChange={e => setBootstrapOpts({ ...bootstrapOpts, concurrency: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div style={css.btnRow}>
+                <button
+                  style={css.btnP}
+                  disabled={busy || bootstrapRunning}
+                  onClick={bootstrapStart}
+                >
+                  Start bootstrap
+                </button>
+                <button
+                  style={css.btn}
+                  disabled={busy}
+                  onClick={() => setBootstrapOpts({ category: "all", scenarios: "5", chunkSize: 5, concurrency: 3 })}
+                >
+                  Use smoke-test preset
+                </button>
+              </div>
+              {bootstrapState?.status === "done" && (
+                <div style={{ ...css.notice, marginTop: 10 }}>
+                  Last run: {bootstrapState.totalExamples} examples kept across {bootstrapState.processed} scenarios
+                  {bootstrapState.archiveKey && <> · archived as <code>{bootstrapState.archiveKey.split(":").pop()}</code></>}
+                  {bootstrapState.archiveError && <span style={{ color: "#ffc4c4" }}> · archive error: {bootstrapState.archiveError}</span>}
+                </div>
+              )}
+            </>
+          )}
+
+          {(bootstrapRunning || bootstrapState?.status === "running") && bootstrapState && (
+            <>
+              <div style={{ marginBottom: 8, fontSize: 13 }}>
+                {bootstrapState.processed} / {bootstrapState.totalScenarios} scenarios · {bootstrapState.totalExamples} examples kept · {bootstrapState.percent}%
+              </div>
+              <div style={{
+                height: 8,
+                background: "#1a1a24",
+                borderRadius: 4,
+                overflow: "hidden",
+                marginBottom: 10,
+              }}>
+                <div style={{
+                  width: `${bootstrapState.percent}%`,
+                  height: "100%",
+                  background: "linear-gradient(90deg, #4a6aff 0%, #6a8aff 100%)",
+                  transition: "width 0.4s ease",
+                }} />
+              </div>
+              {bootstrapState.breakdownLast && bootstrapState.breakdownLast.length > 0 && (
+                <div style={{ fontSize: 11, color: "#8a8a99", fontFamily: "ui-monospace, Menlo, monospace", maxHeight: 120, overflow: "auto", marginBottom: 10 }}>
+                  {bootstrapState.breakdownLast.map((b, i) => (
+                    <div key={i}>
+                      {b.error
+                        ? `✗ ${b.scenarioId}: ${b.error}`
+                        : `✓ ${b.scenarioId} (${b.category}) — kept ${b.kept}/${b.generated}`}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={css.btnRow}>
+                <button style={css.btnD} disabled={busy} onClick={bootstrapAbort}>
+                  Abort
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
         {/* ─── Archives ──────────────────────────────────────────────────── */}
         <div style={css.card}>
           <div style={css.cardTitle}>Upstash archives ({archives.length})</div>
-          {archives.length === 0 && <div style={css.subtitle}>No archives yet. Run bootstrap in the codespace first.</div>}
+          {archives.length === 0 && <div style={css.subtitle}>No archives yet. Use the Bootstrap panel above to generate one.</div>}
           {archives.slice(-5).reverse().map((k) => (
             <div key={k} style={css.kv}>
               <span style={css.kvKey}>{k.split(":").pop()}</span>
