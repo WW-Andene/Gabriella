@@ -288,7 +288,10 @@ export async function POST(req) {
     const turnKnobs = computeKnobs({
       state:          affectState,
       feltState:      taggedFeltState,
-      context:        { pragmaticWeight: pragmatics?.weight ?? 0.3 },
+      context:        {
+        pragmaticWeight: pragmatics?.weight ?? 0.3,
+        lastUserMessage: recentMessages[recentMessages.length - 1]?.content || "",
+      },
       substrateDelta,
     });
     const candidate = shape(rawResponse1, turnKnobs);

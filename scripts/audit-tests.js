@@ -712,6 +712,74 @@ console.log("\n# Phase 5 substrate evolution (meta-loop)");
   assert("analyzeUsage returns null on null input", analyzeUsage(null) === null);
 }
 
+// ─── 5b. Phase 6 — texting register ──────────────────────────────────────────
+
+console.log("\n# Phase 6 texting register");
+
+{
+  const { computeKnobs, renderKnobsBlock } = await import("../lib/gabriella/knobs.js");
+  const baseState = {
+    openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.05, warmth: 0.5,
+    energy: 0.7, attention: 0.6, socialComfort: 0.6, updatedAt: Date.now(),
+  };
+  const felt = { temperature: "present", length: "short", charge: "ok", emotional: "here", want: "respond", resist: "" };
+
+  // Heavy moment → always typed, regardless of user register.
+  const heavy = computeKnobs({
+    state: baseState, feltState: felt,
+    context: { pragmaticWeight: 0.8, lastUserMessage: "yeah ok lol" },
+  });
+  assert("heavy weight forces typed register", heavy.textingRegister === "typed",
+    `got: ${heavy.textingRegister}`);
+
+  // Formal-looking user message → typed.
+  const formalUser = computeKnobs({
+    state: baseState, feltState: felt,
+    context: {
+      pragmaticWeight: 0.2,
+      lastUserMessage: "I've been thinking about this problem for a while, and I believe the correct approach is to carefully consider each variable. What do you think? I'd appreciate your perspective.",
+    },
+  });
+  assert("formal prose user → typed", formalUser.textingRegister === "typed",
+    `got: ${formalUser.textingRegister}`);
+
+  // Casual lowercase abbreviated user + high comfort → textedCasual.
+  const casualUser = computeKnobs({
+    state: { ...baseState, socialComfort: 0.7 },
+    feltState: felt,
+    context: { pragmaticWeight: 0.2, lastUserMessage: "idk man lol ur probs right" },
+  });
+  assert("casual abbreviated user + comfort → textedCasual",
+    casualUser.textingRegister === "textedCasual",
+    `got: ${casualUser.textingRegister}`);
+
+  // Low energy + casual user + high comfort → textedTired.
+  const tiredState = computeKnobs({
+    state: { ...baseState, energy: 0.2, socialComfort: 0.75 },
+    feltState: felt,
+    context: { pragmaticWeight: 0.2, lastUserMessage: "mm yeah same idk" },
+  });
+  assert("low energy + casual user + comfort → textedTired",
+    tiredState.textingRegister === "textedTired",
+    `got: ${tiredState.textingRegister}`);
+
+  // Short phatic "hi" user with low comfort → textedLight (not full casual).
+  const lightUser = computeKnobs({
+    state: { ...baseState, socialComfort: 0.4 },
+    feltState: felt,
+    context: { pragmaticWeight: 0.15, lastUserMessage: "Hi!" },
+  });
+  assert("short light user → textedLight",
+    lightUser.textingRegister === "textedLight",
+    `got: ${lightUser.textingRegister}`);
+
+  // renderKnobsBlock includes a Register: line.
+  const rendered = renderKnobsBlock(casualUser);
+  assert("renderKnobsBlock includes Register line",
+    /Register: TEXTED-CASUAL/.test(rendered),
+    `rendered snippet: ${rendered.slice(0, 400)}`);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
