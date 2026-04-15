@@ -37,7 +37,6 @@ import {
 import { speak }                                            from "../../../lib/gabriella/speaker.js";
 import { runGauntlet, getGauntletConstraintBlock, generateFallback } from "../../../lib/gabriella/gauntlet.js";
 import { logExchange }                                      from "../../../lib/gabriella/logger.js";
-import { patchSystemPromptLinguistics }                     from "../../../lib/gabriella/linguistics.js";
 import { runTripleCore }                                    from "../../../lib/gabriella/clone/index.js";
 import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
@@ -254,12 +253,7 @@ export async function POST(req) {
       pragmatics,
     });
 
-    // 3a. Upgrade the linguistics block with the full felt-state. Kept for
-    //     logging / downstream inspection — the speaker builds its own
-    //     prompt from the felt-state directly, not from this string.
-    const enrichedSystemPrompt = patchSystemPromptLinguistics(systemPrompt, feltState, currentMood);
-
-    // 3b. Tag felt-state with mood so the speaker's linguistics block picks
+    // 3a. Tag felt-state with mood so the speaker's linguistics block picks
     //     up the current mood palette without a second parameter.
     const taggedFeltState = { ...feltState, _mood: currentMood };
 
@@ -351,9 +345,21 @@ export async function POST(req) {
         .filter(l => l.startsWith("—"))
         .join(" ");
 
+      // Consensus-aware retry: when the cores diverged on the initial
+      // reading AND the gauntlet rejected, that's a signal the
+      // interpretation itself may have been off — not just the
+      // phrasing. Carry a hedge into the retry so the speaker writes
+      // with held uncertainty instead of doubling down on the rejected
+      // reading.
+      const consensusHedge = consensus === "divergent"
+        ? " The cores disagreed on reading this moment — the interpretation here is held loosely, not a settled verdict."
+        : consensus === "moderate"
+        ? " The reading of this moment wasn't unanimous — leave a small margin for having misread."
+        : "";
+
       const constrainedFeltState = {
         ...taggedFeltState,
-        resist: `${taggedFeltState.resist}. ${constraintBullets}`,
+        resist: `${taggedFeltState.resist}. ${constraintBullets}${consensusHedge}`,
       };
 
       const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);

@@ -1105,6 +1105,74 @@ console.log("\n# Phase 9 delivery");
   }
 }
 
+// ─── 5f. Audit fixes — weight-aware state fold, metacognition recurrence,
+//        substrate drift paragraph ────────────────────────────────────────────
+
+console.log("\n# Audit fixes — state + metacognition + soul drift");
+
+{
+  const { foldFeltState } = await import("../lib/gabriella/state.js");
+
+  const base = {
+    openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.1, warmth: 0.5,
+    energy: 0.7, attention: 0.6, socialComfort: 0.5, updatedAt: Date.now(),
+  };
+  const warm = { temperature: "open", charge: "warm, tender", want: "lean in", resist: "", length: "medium" };
+
+  const casual = foldFeltState(base, warm, { pragmaticWeight: 0.25 });
+  const heavy  = foldFeltState(base, warm, { pragmaticWeight: 0.8 });
+
+  assert("heavy turn pushes care further than casual turn",
+    Math.abs(heavy.care - 0.8) < Math.abs(casual.care - 0.8),
+    `heavy.care=${heavy.care.toFixed(3)}, casual.care=${casual.care.toFixed(3)}`);
+
+  assert("heavy turn pushes openness further than casual turn",
+    Math.abs(heavy.openness - 0.85) < Math.abs(casual.openness - 0.85),
+    `heavy.openness=${heavy.openness.toFixed(3)}, casual.openness=${casual.openness.toFixed(3)}`);
+
+  // Weight cap: even at weight 1.0 we shouldn't spill outside 0..1.
+  const extreme = foldFeltState(base, warm, { pragmaticWeight: 1.0 });
+  assert("weight 1.0 leaves state in 0..1",
+    extreme.openness >= 0 && extreme.openness <= 1 &&
+    extreme.care >= 0 && extreme.care <= 1,
+    `extreme: ${JSON.stringify(extreme)}`);
+
+  // Warmth stays slow — heavy turn shouldn't blow warmth far off baseline.
+  assert("warmth remains slow-moving even on heavy turn",
+    Math.abs(heavy.warmth - base.warmth) < 0.1,
+    `heavy.warmth=${heavy.warmth.toFixed(3)}`);
+}
+
+{
+  const { classifyIssue } = await import("../lib/gabriella/metacognition.js");
+
+  assert("classifyIssue: bullet formatting",
+    classifyIssue("Response uses bullet point formatting") === "list_formatting");
+  assert("classifyIssue: starts with I",
+    classifyIssue("Response starts with 'I'") === "opens_with_i");
+  assert("classifyIssue: wrap-up",
+    classifyIssue("Ends with a wrap-up validation question") === "summary_ending");
+  assert("classifyIssue: banned phrase",
+    classifyIssue('Banned phrase: /\\bgreat question\\b/i') === "banned_phrase");
+  assert("classifyIssue: therapist voice",
+    classifyIssue("sounds like a therapist validating a patient") === "therapist_voice");
+  assert("classifyIssue: unknown on empty",
+    classifyIssue("") === "unknown");
+  assert("classifyIssue: null safe",
+    classifyIssue(null) === "unknown");
+}
+
+{
+  // Soul drift paragraph is pure — test the helper directly via a
+  // re-import trick. soul.js doesn't export the helper, so we test the
+  // behavior indirectly by ensuring updateSoul's signature accepts
+  // substrateDelta without throwing on a module load.
+  const soul = await import("../lib/gabriella/soul.js");
+  assert("updateSoul accepts substrateDelta parameter",
+    typeof soul.updateSoul === "function" && soul.updateSoul.length >= 5,
+    `updateSoul arity: ${soul.updateSoul?.length}`);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
