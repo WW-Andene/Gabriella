@@ -1174,6 +1174,55 @@ console.log("\n# Audit fixes — state + metacognition + soul drift");
     `updateSoul arity: ${soul.updateSoul?.length}`);
 }
 
+// ─── Cold-start depth acceleration ──────────────────────────────────────────
+
+console.log("\n# Cold-start depth");
+
+{
+  // person.js exposes its cadence decisions via shouldUpdate. We can't
+  // directly import the private function, but we can exercise the
+  // behavior via the module's public update gate by simulating turnCount
+  // + timestamps through a tiny stub of redis.
+  const person = await import("../lib/gabriella/person.js");
+
+  // Mock redis — in-memory. person.js uses get/set with JSON bodies.
+  const store = new Map();
+  const fakeRedis = {
+    async get(k) { return store.get(k) ?? null; },
+    async set(k, v) { store.set(k, v); return "OK"; },
+  };
+
+  // ——— With no LLM key, updatePerson will fail at the LLM call and
+  // return null. That's fine — we're testing the gating, not the LLM.
+  // Seed turn 1: SHOULD fire even though turnCount=1 (cold-start seed).
+  const result1 = await person.updatePerson(fakeRedis, "u1", {
+    messages: [{ role: "user", content: "hi, i've been thinking about work a lot" }],
+    reply:    "hey. what about work?",
+  });
+  // When LLM fails, updatePerson returns null; but the turnCount gets
+  // incremented via the savePerson-before-LLM path. Load and check.
+  const seeded = await person.loadPerson(fakeRedis, "u1");
+  assert("person.turnCount incremented on turn 1", seeded.turnCount === 1,
+    `turnCount: ${seeded.turnCount}`);
+}
+
+{
+  const nar = await import("../lib/gabriella/narrative.js");
+  // Pure function test: loadNarrative on empty store returns text: null
+  // and a default meta. Verify the cold-start flag isn't set yet.
+  const store = new Map();
+  const fakeRedis = {
+    async get(k) { return store.get(k) ?? null; },
+    async set(k, v) { store.set(k, v); return "OK"; },
+  };
+  const loaded = await nar.loadNarrative(fakeRedis, "new-user");
+  assert("loadNarrative on empty store returns text:null + default meta",
+    loaded.text === null &&
+    loaded.meta &&
+    loaded.meta.lastRewriteAt === 0,
+    `loaded: ${JSON.stringify(loaded)}`);
+}
+
 // ─── Organic-timing fixes (truncation recovery, cadence, pauses) ────────────
 
 console.log("\n# Organic-timing fixes");
