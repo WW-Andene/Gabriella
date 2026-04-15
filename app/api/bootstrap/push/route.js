@@ -105,17 +105,22 @@ export async function GET(req) {
           flow:      result.flow || "unknown",
           fileId:    result.fileId || null,
         },
+        trace:   result.trace || null,
         message: "Upload succeeded. The dataset is live on Fireworks and the next /api/learn run can train on it.",
       });
     } catch (fwErr) {
       return json({
-        ok:         false,
+        ok:              false,
         archiveKey,
-        bytes:      jsonl.length,
+        bytes:           jsonl.length,
         lines,
         filename,
-        error:      String(fwErr.message || fwErr),
-        note:       "Training data is still safe in Upstash. Fix the Fireworks config and hit this endpoint again.",
+        failedAtStep:    fwErr.step   || null,
+        fireworksStatus: fwErr.status || null,
+        fireworksBody:   fwErr.body   || null,
+        trace:           fwErr.trace  || null,
+        error:           String(fwErr.message || fwErr),
+        note:            "Training data is still safe in Upstash. Paste this full JSON back to debug — the trace shows exactly which step Fireworks rejected.",
       }, 502);
     }
   } catch (err) {
