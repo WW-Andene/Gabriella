@@ -1,6 +1,27 @@
 "use client";
 import { useState, useRef, useEffect, useMemo } from "react";
 
+// Paper-plane send icon — inline SVG, inherits currentColor so hover/disabled
+// states from the button are picked up automatically.
+function SendIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ transform: "translateX(1px)" }}
+    >
+      <path d="M3.4 20.4 21 12 3.4 3.6l.1 6.6L16 12l-12.5 1.8-.1 6.6z" fill="currentColor" fillOpacity="0.18" />
+    </svg>
+  );
+}
+
 // Client-side rendering model:
 //   Each conversation turn is a list of "bubbles". A user turn is always
 //   one bubble. An assistant turn is 1..N bubbles — split on the "\n\n"
@@ -91,8 +112,6 @@ export default function Home() {
       setLoading(false);
       setThinking(false);
       abortRef.current = null;
-      // Gently return focus to the input for fast follow-ups.
-      setTimeout(() => inputRef.current?.focus(), 50);
     }
   };
 
@@ -266,6 +285,7 @@ export default function Home() {
         padding: "14px 18px 28px",
         borderTop: "1px solid rgba(255,255,255,0.05)",
         display: "flex", gap: 10,
+        alignItems: "flex-end",
         background: "rgba(8,8,15,0.8)",
         backdropFilter: "blur(14px)",
         WebkitBackdropFilter: "blur(14px)",
@@ -273,24 +293,40 @@ export default function Home() {
         bottom: 0,
         zIndex: 5,
       }}>
-        <input
+        <textarea
           ref={inputRef}
           className="g-input"
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && !loading && send()}
+          onKeyDown={e => {
+            // Cmd/Ctrl+Enter → send. Plain Enter inserts a newline (default textarea behavior).
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !loading) {
+              e.preventDefault();
+              send();
+            }
+          }}
+          onInput={e => {
+            // Auto-grow height up to a sensible cap.
+            e.target.style.height = "auto";
+            e.target.style.height = Math.min(160, e.target.scrollHeight) + "px";
+          }}
           placeholder="message..."
+          rows={1}
           disabled={loading}
           style={{
             flex: 1,
             background: loading ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
             border: "1px solid rgba(255,255,255,0.08)",
-            borderRadius: 12,
+            borderRadius: 14,
             padding: "11px 14px",
             color: loading ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.86)",
             fontSize: 14,
+            lineHeight: 1.5,
             outline: "none",
             fontFamily: "inherit",
+            resize: "none",
+            maxHeight: 160,
+            overflowY: "auto",
           }}
         />
         <button
@@ -301,14 +337,21 @@ export default function Home() {
           style={{
             background: loading || !input.trim() ? "rgba(255,155,55,0.05)" : "rgba(255,155,55,0.14)",
             border: `1px solid ${loading || !input.trim() ? "rgba(255,155,55,0.15)" : "rgba(255,155,55,0.28)"}`,
-            borderRadius: 12,
-            padding: "11px 18px",
+            borderRadius: "50%",
+            width: 42,
+            height: 42,
+            padding: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             color: loading || !input.trim() ? "rgba(255,175,75,0.3)" : "rgba(255,195,100,0.95)",
-            fontSize: 16,
             cursor: loading || !input.trim() ? "default" : "pointer",
             fontFamily: "inherit",
+            flexShrink: 0,
           }}
-        >→</button>
+        >
+          <SendIcon />
+        </button>
       </div>
     </div>
   );
