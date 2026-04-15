@@ -1,0 +1,212 @@
+/* Global styles + animations for the chat UI. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #08080f;
+  color-scheme: dark;
+}
+
+/* Soft scrollbar that doesn't clash with the dark palette. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 175, 70, 0.18); }
+
+/* ── Keyframes ───────────────────────────────────────────────────────────── */
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slowPulse {
+  0%, 100% { opacity: 0.18; }
+  50%      { opacity: 0.38; }
+}
+
+@keyframes emberPulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.95; }
+}
+
+@keyframes cityBreath {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.75; transform: scale(1.04); }
+}
+
+@keyframes dotBounce {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0) scale(0.85); }
+  40%           { opacity: 1;    transform: translateY(-3px) scale(1); }
+}
+
+@keyframes caretBlink {
+  0%, 45% { opacity: 0.85; }
+  55%, 100% { opacity: 0; }
+}
+
+@keyframes softGlow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255,155,55,0.22), 0 0 0 transparent; }
+  50%      { box-shadow: 0 0 0 1px rgba(255,155,55,0.35), 0 0 18px -2px rgba(255,155,55,0.18); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -120% 0; }
+  100% { background-position: 220% 0; }
+}
+
+/* ── Utility classes ─────────────────────────────────────────────────────── */
+
+.g-bubble {
+  animation: fadeUp 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+.g-bubble:hover {
+  border-color: rgba(255, 255, 255, 0.13);
+}
+
+.g-bubble.user:hover {
+  border-color: rgba(255, 155, 55, 0.35);
+}
+
+.g-city-glow {
+  animation: cityBreath 14s ease-in-out infinite;
+}
+
+.g-ember {
+  animation: emberPulse 2.8s ease-in-out infinite;
+}
+
+.g-empty {
+  animation: slowPulse 3.2s ease-in-out infinite;
+}
+
+.g-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: rgba(255, 175, 70, 0.85);
+  animation: caretBlink 1s steps(2, jump-none) infinite;
+  border-radius: 1px;
+}
+
+.g-typing-dots {
+  display: inline-flex;
+  gap: 5px;
+  align-items: flex-end;
+  height: 1em;
+}
+.g-typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 175, 70, 0.85);
+  animation: dotBounce 1.3s ease-in-out infinite;
+}
+.g-typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.g-typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+.g-input {
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.25s ease,
+    color 0.2s ease;
+}
+
+.g-input:focus {
+  border-color: rgba(255, 155, 55, 0.3) !important;
+  box-shadow: 0 0 0 3px rgba(255, 155, 55, 0.08);
+  background: rgba(255, 255, 255, 0.055) !important;
+}
+
+.g-send-btn {
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.15s ease,
+    color 0.2s ease;
+}
+
+.g-send-btn:not(:disabled):hover {
+  background: rgba(255, 155, 55, 0.2) !important;
+  border-color: rgba(255, 155, 55, 0.4) !important;
+  color: rgba(255, 195, 100, 1) !important;
+  transform: translateY(-1px);
+}
+
+.g-send-btn:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
+.g-status-ember {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 0.02em;
+  background: rgba(255, 175, 70, 0.85);
+  box-shadow: 0 0 6px rgba(255, 175, 70, 0.6);
+  animation: emberPulse 2.8s ease-in-out infinite;
+}
+
+.g-status-ember.typing {
+  animation: emberPulse 0.9s ease-in-out infinite;
+}
+
+.g-header-title {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.88) 0%,
+    rgba(255, 205, 135, 0.92) 50%,
+    rgba(255, 255, 255, 0.88) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 9s linear infinite;
+}
+
+.g-error {
+  animation: fadeUp 0.3s ease both;
+}
+
+/* Reduce motion respectfully. */
+@media (prefers-reduced-motion: reduce) {
+  .g-bubble,
+  .g-city-glow,
+  .g-empty,
+  .g-caret,
+  .g-ember,
+  .g-status-ember,
+  .g-header-title,
+  .g-typing-dots span,
+  .g-error {
+    animation: none !important;
+  }
+  .g-caret { opacity: 0.6; }
+}
