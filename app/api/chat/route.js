@@ -28,7 +28,7 @@
 //                         quoted phrases are fed back into the dynamic
 //                         banned list so the heuristic filter evolves.
 
-import { buildGabriella, updateGabriella, redis, USER_ID } from "../../../lib/gabriella/engine.js";
+import { buildGabriella, updateGabriella, redis } from "../../../lib/gabriella/engine.js";
 import { parseMonologue }                                   from "../../../lib/gabriella/monologue.js";
 import {
   runMetacognition, heuristicCheck,
