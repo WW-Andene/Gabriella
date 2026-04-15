@@ -29,29 +29,21 @@
 //                         banned list so the heuristic filter evolves.
 
 import { buildGabriella, updateGabriella, redis } from "../../../lib/gabriella/engine.js";
-import { parseMonologue }                                   from "../../../lib/gabriella/monologue.js";
 import {
-  runMetacognition, heuristicCheck,
+  runMetacognition,
   getDynamicBanned, recordBannedPhrase, extractPhraseFromFailure,
 } from "../../../lib/gabriella/metacognition.js";
-import { speak }                                            from "../../../lib/gabriella/speaker.js";
-import { runGauntlet, getGauntletConstraintBlock, generateFallback } from "../../../lib/gabriella/gauntlet.js";
 import { logExchange }                                      from "../../../lib/gabriella/logger.js";
-import { runTripleCore }                                    from "../../../lib/gabriella/clone/index.js";
 import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
-import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
-import { premiumModel, unifiedCognition }                   from "../../../lib/gabriella/models.js";
-import { pickClient, withKeyRotation, poolStats }           from "../../../lib/gabriella/groqPool.js";
+import { withKeyRotation }                                  from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
 import { logError, logWarn }                                from "../../../lib/gabriella/debugLog.js";
 import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/gabriella/fireworks.js";
-import { shape }                                            from "../../../lib/gabriella/shaping.js";
-import { computeKnobs }                                     from "../../../lib/gabriella/knobs.js";
-import { loadSubstrateDelta }                               from "../../../lib/gabriella/substrateEvolution.js";
 import { computeCadence, sleep }                            from "../../../lib/gabriella/cadence.js";
-import { maybeFragment }                                    from "../../../lib/gabriella/fragmenter.js";
+import { premiumModel }                                     from "../../../lib/gabriella/models.js";
+import { runTurn }                                          from "../../../lib/gabriella/turn.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -204,227 +196,31 @@ export async function POST(req) {
       });
     }
 
-    // 3. Cognition — triple-core by default; collapsed to a single-pass
-    //    unified interpretation if UNIFIED_COGNITION is set, OR if the
-    //    Groq pool is fully exhausted (dead keys). In the latter case,
-    //    unified cognition falls back through to Fireworks automatically.
-    const poolLive = poolStats().aliveCount > 0;
-    const useUnified = unifiedCognition() || !poolLive;
-    if (!poolLive) {
-      logWarn("chat", "Groq pool fully dead — using unified cognition via Fireworks", {
-        pool: poolStats(),
-      }).catch(() => {});
-    }
+    // 3. Per-turn pipeline — extracted into runTurn() so route.js stays
+    //    an HTTP boundary and the cognition + speak + gauntlet sequence
+    //    can be iterated on without touching transport. Priors (person
+    //    + narrative) flow into the cores as continuity signals.
+    const turnResult = await runTurn({
+      // buildGabriella output
+      messages, recentMessages, memory, currentMood,
+      withheldCandidate, debtCall, activeAgenda, activeThreshold,
+      currentRegister, currentAuthorial, ripeSeed,
+      questionEval, chronology, currentArc, recurrence,
+      reasoningTrace, pragmatics, affectState, personModel, narrative,
+      trajectory, phase,
+      // Lifecycle state
+      withheld, dynamicBanned,
+      // Infra
+      redis, userId,
+    });
 
     const {
-      feltState,
-      alpha: alphaResult,
-      beta:  betaResult,
-      gamma: gammaResult,
-      consensus,
-    } = useUnified
-      ? await runUnifiedCognition({
-          memory, recentMessages, currentMood, pragmatics, reasoningTrace,
-        })
-      : await runTripleCore({
-      soul:          memory.soul,
-      recentMessages,
-      memory,
-      currentMood,
-      agenda:        activeAgenda,
-      debt:          debtCall,
-      withheld,
-      register:      currentRegister,
-      authorial:     currentAuthorial,
-      threshold:     activeThreshold,
-      imaginal:      ripeSeed,
-      questionEval,
-      // Structured temporal — Gamma queries these before interpreting.
-      chronology,
-      arc:           currentArc,
-      recurrence,
-      // Interior continuity — every core sees what she has been turning
-      // over across turns, so interpretation is a continuation, not a
-      // cold start.
-      reasoningTrace,
-      // Pragmatic classification — act, weight, register, substrate.
-      // Bounds how much intensity each core is allowed to read into
-      // the moment.
-      pragmatics,
-    });
-
-    // 3a. Tag felt-state with mood so the speaker's linguistics block picks
-    //     up the current mood palette without a second parameter.
-    const taggedFeltState = { ...feltState, _mood: currentMood };
-
-    // 3c. Deliberation — the thinking layer. Produces structured cognition:
-    //     actual chain-of-thought, the decision she's making, any initiative
-    //     she's bringing, linking to earlier turns, self-critique. The
-    //     speaker receives this in its prompt and writes the response the
-    //     thinking implies, instead of generating from a felt-state alone.
-    //     This is what makes her think instead of react.
-    const deliberation = await deliberate({
-      feltState:       taggedFeltState,
-      memory,
-      trace:           reasoningTrace,
-      recentMessages,
-      currentRegister,
-      currentMood,
-      questionEval,
-      activeAgenda,
-      activeThreshold,
-      ripeSeed,
-      pragmatics,
-    });
-
-    // 4. Speaker receives felt-state + deliberation + messages.
-    //    Passing redis lets the speaker route to Fireworks if a
-    //    fine-tune has been activated, with automatic Groq fallback.
-    // Load substrateDelta here so BOTH speak() and shape() see the same
-    // learned-signature layer for this turn.
-    const substrateDelta = await loadSubstrateDelta(redis, userId).catch(() => null);
-    let rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
-    let parsed1 = parseMonologue(rawCandidate);
-
-    // Truncation recovery: if the model hit max_tokens mid-<think> and never
-    // emitted a visible response, retry once with a lifted token budget.
-    // Without this, the user sees an empty bubble or a mid-sentence cut on
-    // the comma where the hidden monologue got chopped.
-    if (parsed1.truncated || (!parsed1.response && parsed1.innerThought)) {
-      logWarn("chat", "speaker truncated inside <think>, retrying with expanded budget", {
-        thoughtLen: parsed1.innerThought?.length || 0,
-      }).catch(() => {});
-      const expandedFelt = { ...taggedFeltState, _tokenBoost: 400 };
-      rawCandidate = await speak(expandedFelt, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
-      parsed1 = parseMonologue(rawCandidate);
-    }
-
-    const { innerThought: thought1, response: rawResponse1, uncertain: uncertain1 } = parsed1;
-
-    // 4a. Phase 4 — post-generation shaping pass. Applies knob-aware
-    //     transforms: strips summary endings / residual banned phrases
-    //     the prompt missed, fixes 'starts with I' where safe, applies
-    //     signature-word swaps at higher signatureDensity, occasionally
-    //     injects a small disfluency marker. Conservative by design —
-    //     won't mangle grammar or strip meaning; if a transform fails,
-    //     original text is preserved.
-    //
-    //     substrateDelta was loaded above (pre-speak) and is reused here.
-    const turnKnobs = computeKnobs({
-      state:          affectState,
-      feltState:      taggedFeltState,
-      context:        {
-        pragmaticWeight: pragmatics?.weight ?? 0.3,
-        lastUserMessage: recentMessages[recentMessages.length - 1]?.content || "",
-      },
-      substrateDelta,
-    });
-    const candidate = shape(rawResponse1, turnKnobs);
-
-    // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
-    //    passed in so recently-penalized phrases trip the filter without
-    //    waiting for the gauntlet to catch them again.
-    const heuristic              = heuristicCheck(candidate, dynamicBanned);
-    const candidateNeedsGauntlet = heuristic.authentic;
-
-    // 6. Gauntlet — only run full LLM checks if heuristic passed.
-    //    questionEval flows in so checkCompliant sees the deflection verdict.
-    const gauntletResult = candidateNeedsGauntlet
-      ? await runGauntlet(candidate, recentMessages, withheld, questionEval, activeAgenda, activeThreshold)
-      : { pass: false, failures: [{ type: "HEURISTIC", reason: heuristic.reason }] };
-
-    let finalResponse = candidate;
-    let innerThought  = thought1;
-    let finalUncertain = uncertain1;
-    let finalGauntlet = gauntletResult;
-    let retried       = false;
-    // For DPO: the candidate the gauntlet caught + why, preserved so we
-    // can log the preference pair once a successful retry exists.
-    let rejectedCandidate = null;
-    let rejectedReasons   = null;
-
-    if (!gauntletResult.pass) {
-      // 6a. Remember what was rejected. If the retry passes, this becomes
-      //     a DPO preference pair — same context, two candidates, one
-      //     gauntlet-caught and one clean.
-      rejectedCandidate = candidate;
-      rejectedReasons   = gauntletResult.failures || [];
-
-      // One retry — inject the gauntlet's constraint into the felt-state
-      // and re-speak. The speaker doesn't see the failures directly;
-      // it sees a sharpened `resist` clause.
-      retried = true;
-      const constraintNote    = getGauntletConstraintBlock(gauntletResult.failures);
-      const constraintBullets = constraintNote
-        .split("\n")
-        .filter(l => l.startsWith("—"))
-        .join(" ");
-
-      // Consensus-aware retry: when the cores diverged on the initial
-      // reading AND the gauntlet rejected, that's a signal the
-      // interpretation itself may have been off — not just the
-      // phrasing. Carry a hedge into the retry so the speaker writes
-      // with held uncertainty instead of doubling down on the rejected
-      // reading.
-      const consensusHedge = consensus === "divergent"
-        ? " The cores disagreed on reading this moment — the interpretation here is held loosely, not a settled verdict."
-        : consensus === "moderate"
-        ? " The reading of this moment wasn't unanimous — leave a small margin for having misread."
-        : "";
-
-      const constrainedFeltState = {
-        ...taggedFeltState,
-        resist: `${taggedFeltState.resist}. ${constraintBullets}${consensusHedge}`,
-      };
-
-      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
-      const { innerThought: thought2, response: rawResponse2, uncertain: uncertain2 } = parseMonologue(rawRetry);
-      // Apply the same shaping pipeline to the retry.
-      const retry = shape(rawResponse2, turnKnobs);
-
-      const retryHeuristic = heuristicCheck(retry, dynamicBanned);
-      const retryGauntlet  = retryHeuristic.authentic
-        ? await runGauntlet(retry, recentMessages, withheld, questionEval, activeAgenda, activeThreshold)
-        : { pass: false, failures: [{ type: "HEURISTIC", reason: retryHeuristic.reason }] };
-
-      if (retryGauntlet.pass) {
-        finalResponse = retry;
-        innerThought  = thought2;
-        finalUncertain = uncertain2;
-        finalGauntlet = retryGauntlet;
-      } else {
-        finalResponse = await generateFallback(
-          recentMessages,
-          "Say as little as possible. One sentence. Be present. Nothing more.",
-        );
-        innerThought  = null;
-        finalUncertain = null;
-        finalGauntlet = retryGauntlet;
-      }
-    }
-
-    // 7. Stream to client.
-    //    Phase 7: compute pre-stream thinking delay from organism state
-    //    + pragmatic weight + response length. Heavy / weighty turns get
-    //    a longer pause before the first character streams ("she's
-    //    thinking"). Light exchanges stay responsive (~300ms).
-    //    Phase 8: consider splitting into natural fragment-sends. Most
-    //    turns stay whole; on eligible casual turns a short aside may
-    //    follow the main response with a 2-5s pause.
-    const cadence = computeCadence({
-      state:          affectState,
-      pragmatics,
-      responseLength: finalResponse.length,
-      isReentry:      false,
-      gapSinceLastTurnMs: 0,
-      textingRegister: turnKnobs?.textingRegister || "typed",
-    });
-
-    const { fragments, pauses } = maybeFragment(finalResponse, {
-      knobs:      turnKnobs,
-      pragmatics,
-      state:      affectState,
-    });
+      finalResponse, fragments, pauses, cadence,
+      feltState, innerThought, finalUncertain, finalGauntlet,
+      retried, rejectedCandidate, rejectedReasons,
+      consensus, alpha: alphaResult, beta: betaResult, gamma: gammaResult,
+      turnKnobs, substrateDelta,
+    } = turnResult;
 
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
@@ -632,74 +428,6 @@ Output only the response text. No <think> block needed for this — it's not tha
   return text;
 }
 
-// ─── Unified cognition ────────────────────────────────────────────────────────
-//
-// Collapses the triple-core into a single interpreter call — only used
-// when UNIFIED_COGNITION is set (i.e., post-SFT, when the speaker has
-// been trained on triple-core-generated data and can carry integration
-// on its own). Produces a felt-state in the same shape the speaker
-// expects, so no downstream code cares which path ran.
-
-async function runUnifiedCognition({ memory, recentMessages, currentMood, pragmatics, reasoningTrace }) {
-  const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
-  const soulLine = memory?.soul ? memory.soul.slice(0, 300) : "";
-  const traceLine = reasoningTrace?.current ? reasoningTrace.current.slice(0, 200) : "";
-
-  const prompt = `You are Gabriella's interpretive layer. Read the moment once, from all angles at once — emotional, relational, temporal — and return a single integrated felt-state.
-
-Last message: "${lastUser}"
-Pragmatic weight: ${pragmatics?.weight ?? "?"} (${pragmatics?.act || "?"})
-Current mood: ${currentMood}
-${soulLine ? `Your soul: ${soulLine}` : ""}
-${traceLine ? `What you've been turning over: ${traceLine}` : ""}
-
-Return ONLY JSON matching this shape. Keep charge/emotional/want/resist concise (≤ 18 words each). Omit notice/edge when genuinely null.
-
-{
-  "temperature": "<closed|terse|present|open>",
-  "length":      "<very short|short|medium|long>",
-  "charge":      "<what landed, 1 phrase>",
-  "emotional":   "<what you're feeling>",
-  "want":        "<what you want to do>",
-  "resist":      "<what you're pulling against>",
-  "notice":      "<something you noticed that hasn't been named, or null>",
-  "edge":        "<what's underneath, or null>"
-}`;
-
-  try {
-    const raw0 = await completionWithFallback({
-      groqModel: premiumModel(),
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 400,
-    });
-    const raw = (raw0 || "").trim().replace(/```(?:json)?/g, "").trim();
-    const feltState = JSON.parse(raw);
-    return {
-      feltState,
-      alpha: { feltState },
-      beta:  { feltState },
-      gamma: { feltState },
-      consensus: "unified",
-    };
-  } catch (err) {
-    console.warn(`unified cognition failed, falling back to defaults: ${err?.message || err}`);
-    const feltState = {
-      temperature: "present",
-      length:      "short",
-      charge:      "something landed",
-      emotional:   "here",
-      want:        "meet them",
-      resist:      "performance",
-      notice:      null,
-      edge:        null,
-    };
-    return {
-      feltState,
-      alpha: { feltState },
-      beta:  { feltState },
-      gamma: { feltState },
-      consensus: "unified-fallback",
-    };
-  }
-}
+// Unified cognition now lives in turn.js (same module that owns the
+// whole per-turn pipeline). The inline version used to live here; it's
+// been moved so all cognition entry points sit together.
