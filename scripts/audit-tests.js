@@ -189,6 +189,105 @@ console.log("\n# persistent emotional state decay");
   assert("cold fold lowers openness", folded.openness < warmState.openness);
 }
 
+// ─── 5a. organism state dimensions ────────────────────────────────────────────
+
+console.log("\n# Phase 2 organism state (energy / attention / socialComfort)");
+
+{
+  const { decayState, foldFeltState } = await import("../lib/gabriella/state.js");
+
+  // 1. Default state has the new dimensions.
+  const fresh = decayState({
+    openness: 0.55, alertness: 0.65, care: 0.4, irritation: 0.05, warmth: 0.5,
+    energy: 0.75, attention: 0.6, socialComfort: 0.5,
+    updatedAt: Date.now(),
+  });
+  assert("decayState preserves all 8 dimensions", [
+    "openness", "alertness", "care", "irritation", "warmth",
+    "energy", "attention", "socialComfort",
+  ].every(k => typeof fresh[k] === "number"));
+
+  // 2. Heavy turn (weight >= 0.7) drains more energy than a casual one.
+  const baseline = { energy: 0.8, attention: 0.6, socialComfort: 0.5, updatedAt: Date.now(), openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.1, warmth: 0.5 };
+  const afterHeavy = foldFeltState(baseline, { temperature: "present", charge: "grief heavy", edge: true }, { pragmaticWeight: 0.8 });
+  const afterLight = foldFeltState(baseline, { temperature: "present", charge: "warm", edge: false }, { pragmaticWeight: 0.15 });
+  assert(
+    "heavy turn drains more energy than phatic",
+    afterHeavy.energy < afterLight.energy,
+    `heavy=${afterHeavy.energy.toFixed(3)} light=${afterLight.energy.toFixed(3)}`,
+  );
+
+  // 3. Attention sharpens on substantive turn; stays soft on phatic.
+  assert(
+    "attention sharpens on substantive turn",
+    afterHeavy.attention > afterLight.attention,
+    `heavy=${afterHeavy.attention.toFixed(3)} light=${afterLight.attention.toFixed(3)}`,
+  );
+
+  // 4. Social comfort rises on a warm turn.
+  const afterWarm = foldFeltState(baseline, { temperature: "present", charge: "warm tender affection", edge: false }, { pragmaticWeight: 0.4 });
+  assert(
+    "social comfort rises on warm turn",
+    afterWarm.socialComfort > baseline.socialComfort,
+  );
+
+  // 5. Social comfort drops on cold turn.
+  const afterCold = foldFeltState(baseline, { temperature: "closed", charge: "cold distant wary", edge: false }, { pragmaticWeight: 0.4 });
+  assert(
+    "social comfort drops on cold turn",
+    afterCold.socialComfort < baseline.socialComfort,
+  );
+
+  // 6. Social comfort softens slightly on re-entry after long gap.
+  const afterReentry = foldFeltState(baseline, { temperature: "present", charge: "warm", edge: false }, {
+    pragmaticWeight: 0.4, gapSinceLastTurnMs: 48 * 60 * 60 * 1000, isReentry: true,
+  });
+  const afterSameButNoReentry = foldFeltState(baseline, { temperature: "present", charge: "warm", edge: false }, {
+    pragmaticWeight: 0.4, isReentry: false,
+  });
+  assert(
+    "re-entry after long gap softens social comfort",
+    afterReentry.socialComfort < afterSameButNoReentry.socialComfort,
+    `reentry=${afterReentry.socialComfort.toFixed(3)} noReentry=${afterSameButNoReentry.socialComfort.toFixed(3)}`,
+  );
+
+  // 7. Energy decays TOWARD rest (0.75), not toward zero, over time.
+  const tired = decayState({
+    openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.1, warmth: 0.5,
+    energy: 0.30, attention: 0.3, socialComfort: 0.5,
+    updatedAt: Date.now() - 4 * 60 * 60 * 1000,  // 4 hours ago
+  });
+  assert(
+    "energy recovers toward rest after long gap",
+    tired.energy > 0.5 && tired.energy <= 0.75,
+    `recovered energy=${tired.energy.toFixed(3)}`,
+  );
+
+  // 8. Attention decays fast — fast half-life check.
+  const drifted = decayState({
+    openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.1, warmth: 0.5,
+    energy: 0.75, attention: 0.9, socialComfort: 0.5,
+    updatedAt: Date.now() - 30 * 60 * 1000,  // 30 min ago — 3 half-lives of 10min
+  });
+  assert(
+    "attention decays quickly without input",
+    drifted.attention < 0.7,
+    `after 30min: ${drifted.attention.toFixed(3)}`,
+  );
+
+  // 9. Social comfort half-life is long — 24h.
+  const comfortable = decayState({
+    openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.1, warmth: 0.5,
+    energy: 0.75, attention: 0.6, socialComfort: 0.8,
+    updatedAt: Date.now() - 2 * 60 * 60 * 1000,  // 2 hours — should barely move
+  });
+  assert(
+    "social comfort is slow-moving",
+    comfortable.socialComfort > 0.72,
+    `after 2h: ${comfortable.socialComfort.toFixed(3)}`,
+  );
+}
+
 // ─── 5b. finetune config layering ─────────────────────────────────────────────
 
 console.log("\n# finetune config (defaults ← env ← upstash ← overrides)");
