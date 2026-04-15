@@ -50,6 +50,7 @@ import { logError, logWarn }                                from "../../../lib/g
 import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/gabriella/fireworks.js";
 import { shape }                                            from "../../../lib/gabriella/shaping.js";
 import { computeKnobs }                                     from "../../../lib/gabriella/knobs.js";
+import { loadSubstrateDelta }                               from "../../../lib/gabriella/substrateEvolution.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -269,7 +270,10 @@ export async function POST(req) {
     // 4. Speaker receives felt-state + deliberation + messages.
     //    Passing redis lets the speaker route to Fireworks if a
     //    fine-tune has been activated, with automatic Groq fallback.
-    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState);
+    // Load substrateDelta here so BOTH speak() and shape() see the same
+    // learned-signature layer for this turn.
+    const substrateDelta = await loadSubstrateDelta(redis, userId).catch(() => null);
+    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
     const { innerThought: thought1, response: rawResponse1, uncertain: uncertain1 } = parseMonologue(rawCandidate);
 
     // 4a. Phase 4 — post-generation shaping pass. Applies knob-aware
@@ -279,10 +283,13 @@ export async function POST(req) {
     //     injects a small disfluency marker. Conservative by design —
     //     won't mangle grammar or strip meaning; if a transform fails,
     //     original text is preserved.
+    //
+    //     substrateDelta was loaded above (pre-speak) and is reused here.
     const turnKnobs = computeKnobs({
-      state:     affectState,
-      feltState: taggedFeltState,
-      context:   { pragmaticWeight: pragmatics?.weight ?? 0.3 },
+      state:          affectState,
+      feltState:      taggedFeltState,
+      context:        { pragmaticWeight: pragmatics?.weight ?? 0.3 },
+      substrateDelta,
     });
     const candidate = shape(rawResponse1, turnKnobs);
 
@@ -330,7 +337,7 @@ export async function POST(req) {
         resist: `${taggedFeltState.resist}. ${constraintBullets}`,
       };
 
-      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics, affectState);
+      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics, affectState, substrateDelta);
       const { innerThought: thought2, response: rawResponse2, uncertain: uncertain2 } = parseMonologue(rawRetry);
       // Apply the same shaping pipeline to the retry.
       const retry = shape(rawResponse2, turnKnobs);
