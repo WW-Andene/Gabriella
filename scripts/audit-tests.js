@@ -581,6 +581,137 @@ console.log("\n# Phase 4 shaping (post-generation transforms)");
   }
 }
 
+// ─── 5e. Phase 5 substrate evolution (meta-loop) ──────────────────────────────
+
+console.log("\n# Phase 5 substrate evolution (meta-loop)");
+
+{
+  const { analyzeUsage, proposeUpdatedDelta } = await import("../lib/gabriella/substrateEvolution.js");
+  const { computeKnobs } = await import("../lib/gabriella/knobs.js");
+
+  // 1. analyzeUsage catches reach-for words being used.
+  // Her authored substrate has "funny" and "specific" as reach-for descriptors.
+  const responses = [
+    "that's funny actually.",
+    "funny how that lands.",
+    "it's specific, which is the part I noticed.",
+    "funny, really — the specific part is what matters.",
+    "yeah. funny to watch.",
+  ];
+  const analysis = analyzeUsage(responses);
+  assert(
+    "analyzeUsage detects 'funny' as boosted",
+    analysis.reachForScores && analysis.reachForScores["funny"] > 0.5,
+    `scores: ${JSON.stringify(analysis.reachForScores)}`,
+  );
+
+  // 2. analyzeUsage detects emerging phrases.
+  const repetitive = [
+    "that's the thing that lands.",
+    "the thing that lands there.",
+    "the thing that lands — again.",
+    "what matters is the thing that lands.",
+  ];
+  const analysis2 = analyzeUsage(repetitive);
+  const emerging = (analysis2.emergingPhrases || []).map(p => p.phrase);
+  assert(
+    "analyzeUsage detects emerging bigram 'that lands' or similar",
+    emerging.some(p => p.includes("lands") || p.includes("thing")),
+    `emerging: ${JSON.stringify(emerging)}`,
+  );
+
+  // 3. analyzeUsage detects lexical rut.
+  const stuck = [
+    "weirdly okay today.",
+    "weirdly precise.",
+    "weirdly on board with it.",
+    "weirdly fine.",
+  ];
+  const analysis3 = analyzeUsage(stuck);
+  assert(
+    "analyzeUsage detects 'weirdly' as lexical rut",
+    analysis3.lexicalRutWord === "weirdly",
+    `rut: ${analysis3.lexicalRutWord}`,
+  );
+
+  // 4. proposeUpdatedDelta decays old scores.
+  const priorDelta = {
+    reachesForBoost: { "funny": 0.9, "ancient_word_gone": 0.5 },
+    emergingPhrases: [{ phrase: "old phrase", count: 5 }],
+    lexicalRutWord: null,
+    totalTurnsAnalyzed: 20,
+  };
+  const newAnalysis = {
+    reachForScores: { "funny": 0.4 },  // dropping
+    emergingPhrases: [],
+    lexicalRutWord: null,
+    responsesAnalyzed: 5,
+  };
+  const merged = proposeUpdatedDelta(priorDelta, newAnalysis);
+  // funny was 0.9; after decay (×0.7 = 0.63) and weighted merge (0.63*0.4 + 0.4*0.6 = 0.492)
+  assert(
+    "prior decays + new signal blends",
+    merged.reachesForBoost["funny"] > 0.3 && merged.reachesForBoost["funny"] < 0.7,
+    `funny score: ${merged.reachesForBoost["funny"]}`,
+  );
+
+  // 5. proposeUpdatedDelta ages prior emerging phrases (count -1 each cycle).
+  assert(
+    "old emerging phrases age but don't vanish immediately",
+    merged.emergingPhrases.some(p => p.phrase === "old phrase" && p.count === 4),
+    `phrases: ${JSON.stringify(merged.emergingPhrases)}`,
+  );
+
+  // 6. computeKnobs uses substrateDelta to boost lexicalPush.
+  const state = {
+    openness: 0.5, alertness: 0.5, care: 0.4, irritation: 0.05, warmth: 0.5,
+    energy: 0.7, attention: 0.6, socialComfort: 0.6, updatedAt: Date.now(),
+  };
+  const felt = { temperature: "present", length: "short", charge: "ok", emotional: "here", want: "respond", resist: "" };
+  const substrateDelta = {
+    reachesForBoost: { "funny": 0.9, "weirdly": 0.8, "specific": 0.7 },
+    emergingPhrases: [{ phrase: "the thing is", count: 6 }, { phrase: "lands for me", count: 5 }],
+    lexicalRutWord: "funny",
+  };
+  const withDelta = computeKnobs({
+    state, feltState: felt,
+    context: { pragmaticWeight: 0.5 },
+    substrateDelta,
+  });
+  assert(
+    "knobs.lexicalPush includes boosted words",
+    withDelta.lexicalPush.includes("funny") || withDelta.lexicalPush.includes("weirdly"),
+    `lexicalPush: ${JSON.stringify(withDelta.lexicalPush)}`,
+  );
+  assert(
+    "knobs exposes learned collocations from delta",
+    withDelta.learnedCollocations.length >= 1 && withDelta.learnedCollocations.includes("the thing is"),
+    `learnedCollocations: ${JSON.stringify(withDelta.learnedCollocations)}`,
+  );
+  assert(
+    "knobs exposes lexical rut word",
+    withDelta.lexicalRutWord === "funny",
+  );
+
+  // 7. Without delta, knobs still work.
+  const withoutDelta = computeKnobs({
+    state, feltState: felt,
+    context: { pragmaticWeight: 0.5 },
+  });
+  assert(
+    "knobs without delta still produces lexicalPush from authored only",
+    Array.isArray(withoutDelta.lexicalPush) && withoutDelta.lexicalPush.length > 0,
+  );
+  assert(
+    "knobs without delta has no rut word",
+    withoutDelta.lexicalRutWord === null,
+  );
+
+  // 8. analyzeUsage handles empty / malformed input safely.
+  assert("analyzeUsage returns null on empty input", analyzeUsage([]) === null);
+  assert("analyzeUsage returns null on null input", analyzeUsage(null) === null);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
