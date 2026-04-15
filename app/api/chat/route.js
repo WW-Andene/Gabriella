@@ -48,6 +48,8 @@ import { pickClient, withKeyRotation, poolStats }           from "../../../lib/g
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
 import { logError, logWarn }                                from "../../../lib/gabriella/debugLog.js";
 import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/gabriella/fireworks.js";
+import { shape }                                            from "../../../lib/gabriella/shaping.js";
+import { computeKnobs }                                     from "../../../lib/gabriella/knobs.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -268,7 +270,21 @@ export async function POST(req) {
     //    Passing redis lets the speaker route to Fireworks if a
     //    fine-tune has been activated, with automatic Groq fallback.
     const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState);
-    const { innerThought: thought1, response: candidate, uncertain: uncertain1 } = parseMonologue(rawCandidate);
+    const { innerThought: thought1, response: rawResponse1, uncertain: uncertain1 } = parseMonologue(rawCandidate);
+
+    // 4a. Phase 4 — post-generation shaping pass. Applies knob-aware
+    //     transforms: strips summary endings / residual banned phrases
+    //     the prompt missed, fixes 'starts with I' where safe, applies
+    //     signature-word swaps at higher signatureDensity, occasionally
+    //     injects a small disfluency marker. Conservative by design —
+    //     won't mangle grammar or strip meaning; if a transform fails,
+    //     original text is preserved.
+    const turnKnobs = computeKnobs({
+      state:     affectState,
+      feltState: taggedFeltState,
+      context:   { pragmaticWeight: pragmatics?.weight ?? 0.3 },
+    });
+    const candidate = shape(rawResponse1, turnKnobs);
 
     // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
     //    passed in so recently-penalized phrases trip the filter without
@@ -315,7 +331,9 @@ export async function POST(req) {
       };
 
       const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics, affectState);
-      const { innerThought: thought2, response: retry, uncertain: uncertain2 } = parseMonologue(rawRetry);
+      const { innerThought: thought2, response: rawResponse2, uncertain: uncertain2 } = parseMonologue(rawRetry);
+      // Apply the same shaping pipeline to the retry.
+      const retry = shape(rawResponse2, turnKnobs);
 
       const retryHeuristic = heuristicCheck(retry, dynamicBanned);
       const retryGauntlet  = retryHeuristic.authentic
