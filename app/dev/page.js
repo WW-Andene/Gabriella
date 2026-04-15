@@ -90,18 +90,19 @@ export default function DevPage() {
     if (!secret) return;
     setError(null);
     try {
-      const [whoami, list, finetune, watch, config] = await Promise.all([
+      const [whoami, list, finetune, watch, config, health] = await Promise.all([
         call("/api/fireworks/whoami"),
         call("/api/bootstrap/list"),
         call("/api/fireworks/finetune"),
         call("/api/learn/watch"),
         call("/api/fireworks/config"),
+        call("/api/health"),
       ]);
-      if (whoami.status === 401) {
+      if (whoami.status === 401 || health.status === 401) {
         setError("Unauthorized — check the secret.");
         return;
       }
-      setStatus({ whoami: whoami.data, list: list.data, finetune: finetune.data, watch: watch.data, config: config.data });
+      setStatus({ whoami: whoami.data, list: list.data, finetune: finetune.data, watch: watch.data, config: config.data, health: health.data });
     } catch (err) {
       setError(String(err.message || err));
     }
@@ -193,6 +194,29 @@ export default function DevPage() {
 
         {error  && <div style={css.error}>{error}</div>}
         {notice && <div style={css.success}>{notice}</div>}
+
+        {/* ─── Health banner ───────────────────────────────────────────── */}
+        {status?.health && (() => {
+          const h = status.health;
+          const isBroken   = h.overall === "broken";
+          const isDegraded = h.overall === "degraded";
+          if (!isBroken && !isDegraded) return null;
+          return (
+            <div style={isBroken ? css.error : css.notice}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                {isBroken ? "🚨 App is broken — chat will 500 until fixed" : "⚠ App is degraded"}
+              </div>
+              {(h.problems || []).map((p, i) => (
+                <div key={i} style={{ fontSize: 12, marginTop: 3 }}>{p}</div>
+              ))}
+              <div style={{ fontSize: 11, marginTop: 8, color: "#aaa" }}>
+                chat works: {String(h.summary?.chatCanWork)} ·
+                fine-tune works: {String(h.summary?.fineTuneCanWork)} ·
+                Groq pool: {h.summary?.poolSize || 0} keys
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ─── Account + speaker state ─────────────────────────────────── */}
         <div style={css.card}>
@@ -310,6 +334,52 @@ export default function DevPage() {
             await doAction("/api/fireworks/config?reset=1", { successMsg: "All overrides cleared." });
           }} />
         </div>
+
+        {/* ─── Health detail card ────────────────────────────────────── */}
+        {status?.health && (
+          <details style={{ ...css.card, cursor: "pointer" }}>
+            <summary style={{ fontSize: 13, color: "#a0a0b0" }}>
+              Health details — env vars + service probes
+            </summary>
+            <div style={{ marginTop: 10 }}>
+              <div style={css.cardTitle}>Service probes</div>
+              {Object.entries(status.health.checks || {}).map(([svc, result]) => (
+                <div key={svc} style={css.kv}>
+                  <span style={css.kvKey}>{svc}</span>
+                  <span style={css.kvVal}>
+                    {result.ok
+                      ? <span style={pillFor("READY")}>ok</span>
+                      : <span style={pillFor("FAILED")}>{result.reason || result.error || "down"}</span>}
+                  </span>
+                </div>
+              ))}
+              <div style={{ ...css.cardTitle, marginTop: 16 }}>Required env vars</div>
+              {(status.health.envVars?.required || []).map((v) => (
+                <div key={v.name} style={css.kv}>
+                  <span style={css.kvKey}>{v.name}</span>
+                  <span style={css.kvVal}>
+                    {v.status === "ok"          ? <span style={pillFor("READY")}>set</span> :
+                     v.status === "MISSING"     ? <span style={pillFor("FAILED")}>MISSING</span> :
+                     v.status === "PLACEHOLDER" ? <span style={pillFor("FAILED")}>placeholder: {v.preview}</span> :
+                                                   <span style={pillFor("")}>{v.status}</span>}
+                  </span>
+                </div>
+              ))}
+              <div style={{ ...css.cardTitle, marginTop: 16 }}>Fireworks</div>
+              {(status.health.envVars?.fireworks || []).map((v) => (
+                <div key={v.name} style={css.kv}>
+                  <span style={css.kvKey}>{v.name}</span>
+                  <span style={css.kvVal}>{v.status === "ok" ? "set" : v.status}</span>
+                </div>
+              ))}
+              <div style={{ ...css.cardTitle, marginTop: 16 }}>Groq pool</div>
+              <div style={css.kv}>
+                <span style={css.kvKey}>Keys configured</span>
+                <span style={css.kvVal}>{status.health.summary?.poolSize || 0} / 10</span>
+              </div>
+            </div>
+          </details>
+        )}
 
         {/* ─── Raw status (debug) ────────────────────────────────────────── */}
         <details style={{ ...css.card, cursor: "pointer" }}>
