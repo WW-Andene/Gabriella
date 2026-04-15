@@ -158,7 +158,7 @@ export async function POST(req) {
               withheldCandidate, debtCall, activeAgenda, activeThreshold,
               currentRegister, currentAuthorial, ripeSeed,
               null, reasoningTrace,
-              { userId },
+              { userId, pragmatics, chronology },
             ),
             recordEpisode(redis, userId, {
               userMsg:   lastUser,
@@ -356,7 +356,7 @@ export async function POST(req) {
             withheldCandidate, debtCall, activeAgenda, activeThreshold,
             currentRegister, currentAuthorial, ripeSeed,
             feltState, reasoningTrace,
-            { userId },
+            { userId, pragmatics, chronology },
           ),
           runMetacognition(finalResponse, innerThought, redis, userId, finalUncertain),
 
