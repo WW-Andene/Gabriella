@@ -18,7 +18,8 @@
     "self-eval":             "node --env-file=.env.local scripts/self-eval.js",
     "self-eval-quick":       "node --env-file=.env.local scripts/self-eval.js --scenarios 8",
     "refresh-env":           "bash .devcontainer/setup-env.sh",
-    "rebuild-env":           "bash .devcontainer/setup-env.sh --force"
+    "rebuild-env":           "bash .devcontainer/setup-env.sh --force",
+    "fireworks-check":       "node --env-file=.env.local scripts/fireworks-check.js"
   },
   "dependencies": {
     "next": "14.2.0",
