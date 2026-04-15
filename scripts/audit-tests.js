@@ -1173,6 +1173,81 @@ console.log("\n# Audit fixes — state + metacognition + soul drift");
     `updateSoul arity: ${soul.updateSoul?.length}`);
 }
 
+// ─── Multi-provider pool (Groq + Cerebras + Gemini) ─────────────────────────
+
+console.log("\n# Multi-provider pool");
+
+{
+  const pool = await import("../lib/gabriella/groqPool.js");
+
+  // Rebuild with a fake env: 2 Groq keys + Cerebras + Gemini.
+  pool._test_rebuild({
+    GROQ_API_KEY:   "fake-groq-1",
+    GROQ_API_KEY_2: "fake-groq-2",
+    CEREBRAS_API_KEY: "fake-cerebras",
+    GEMINI_API_KEY:   "fake-gemini",
+  });
+
+  const stats = pool.poolStats();
+  assert("pool contains 4 clients across 3 providers",
+    stats.keyCount === 4 &&
+    stats.byProvider.groq?.total === 2 &&
+    stats.byProvider.cerebras?.total === 1 &&
+    stats.byProvider.gemini?.total === 1,
+    `stats: ${JSON.stringify(stats.byProvider)}`);
+
+  assert("pool aliveCount matches keyCount with no deaths",
+    stats.aliveCount === 4);
+
+  // pickClient with providers filter should only return requested providers.
+  const providers = new Set();
+  for (let i = 0; i < 20; i++) {
+    const c = pool.pickClient({ providers: ["groq"] });
+    providers.add(c.provider);
+  }
+  assert("pickClient({ providers:['groq'] }) returns only groq",
+    providers.size === 1 && providers.has("groq"),
+    `providers seen: ${[...providers]}`);
+
+  // Excluding gemini should never return gemini clients.
+  const excluded = new Set();
+  for (let i = 0; i < 30; i++) {
+    const c = pool.pickClient({ excludeProviders: ["gemini"] });
+    excluded.add(c.provider);
+  }
+  assert("pickClient({ excludeProviders:['gemini'] }) never returns gemini",
+    !excluded.has("gemini"),
+    `providers seen: ${[...excluded]}`);
+
+  // Lane assignment puts alpha/beta/gamma on the first three clients.
+  const alphaClient = pool.clientForLane("alpha");
+  const betaClient  = pool.clientForLane("beta");
+  const gammaClient = pool.clientForLane("gamma");
+  assert("lane alpha lands on a live client", typeof alphaClient?.chat?.completions?.create === "function");
+  assert("lane beta lands on a live client",  typeof betaClient?.chat?.completions?.create === "function");
+  assert("lane gamma lands on a live client", typeof gammaClient?.chat?.completions?.create === "function");
+  // The three lanes should split across providers when we have 2 groq + cerebras + gemini
+  const laneProviders = new Set([alphaClient.provider, betaClient.provider, gammaClient.provider]);
+  assert("lane clients span multiple providers (interpretation diversity)",
+    laneProviders.size >= 2,
+    `lane providers: ${[...laneProviders]}`);
+
+  // Restore the real env pool for subsequent tests / side-effects.
+  pool._test_rebuild(process.env);
+}
+
+{
+  // With no keys at all, the pool should refuse gracefully.
+  const pool = await import("../lib/gabriella/groqPool.js");
+  pool._test_rebuild({});   // zero keys
+  let threw = false;
+  try { pool.pickClient(); } catch (err) {
+    threw = /no provider keys/i.test(err.message);
+  }
+  assert("empty pool throws a clear error", threw);
+  pool._test_rebuild(process.env);
+}
+
 // ─── 6. trajectory heuristic ──────────────────────────────────────────────────
 
 console.log("\n# trajectory heuristic");
