@@ -1,0 +1,394 @@
+"use client";
+
+// app/dev/page.js
+// One-page dev dashboard for Gabriella's training + fine-tune pipeline.
+//
+// Replaces a dozen bookmarked URLs with a single page. Secret is typed
+// once and kept in localStorage (this browser, this device only).
+// Everything speaks to existing /api/* endpoints.
+
+import { useEffect, useMemo, useState, useCallback } from "react";
+
+// ─── Styles (no external deps) ───────────────────────────────────────────────
+
+const css = {
+  shell:    { fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif", background: "#0a0a0f", color: "#e4e4ed", minHeight: "100vh", padding: "20px", boxSizing: "border-box" },
+  wrap:     { maxWidth: 860, margin: "0 auto" },
+  h1:       { margin: "0 0 4px", fontSize: 22, fontWeight: 600, letterSpacing: 0.2 },
+  subtitle: { margin: "0 0 24px", color: "#8a8a99", fontSize: 13 },
+  card:     { background: "#14141c", border: "1px solid #22222e", borderRadius: 10, padding: 14, marginBottom: 12 },
+  cardTitle:{ margin: "0 0 10px", fontSize: 14, fontWeight: 600, textTransform: "uppercase", color: "#a0a0b0", letterSpacing: 1 },
+  btnRow:   { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 },
+  btn:      { padding: "9px 14px", border: "1px solid #33334a", borderRadius: 6, background: "#1d1d28", color: "#e4e4ed", fontSize: 13, cursor: "pointer", fontWeight: 500 },
+  btnP:     { padding: "9px 14px", border: "1px solid #4a6aff", borderRadius: 6, background: "#2a3bae", color: "#fff", fontSize: 13, cursor: "pointer", fontWeight: 500 },
+  btnD:     { padding: "9px 14px", border: "1px solid #aa3333", borderRadius: 6, background: "#3a1a1a", color: "#ffc4c4", fontSize: 13, cursor: "pointer", fontWeight: 500 },
+  input:    { width: "100%", padding: "8px 10px", border: "1px solid #33334a", borderRadius: 6, background: "#0f0f16", color: "#e4e4ed", fontSize: 13, boxSizing: "border-box", fontFamily: "inherit" },
+  label:    { fontSize: 11, color: "#8a8a99", textTransform: "uppercase", letterSpacing: 0.6, display: "block", marginBottom: 3, fontWeight: 500 },
+  kv:       { display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 13, borderBottom: "1px dashed #22222e" },
+  kvKey:    { color: "#a0a0b0" },
+  kvVal:    { color: "#e4e4ed", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12, textAlign: "right", maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  pill:     (color) => ({ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: color, color: "#0a0a0f" }),
+  notice:   { background: "#1a2938", border: "1px solid #2a4a6a", borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 12 },
+  error:    { background: "#2a1a1a", border: "1px solid #6a2a2a", borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 12, color: "#ffc4c4" },
+  success:  { background: "#1a2a1a", border: "1px solid #2a6a2a", borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 12, color: "#c4ffc4" },
+  code:     { background: "#05050a", padding: "10px", borderRadius: 6, fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace", maxHeight: 300, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all", color: "#a0c0ff" },
+  grid2:    { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
+};
+
+const pillFor = (state) => {
+  if (!state) return css.pill("#666");
+  const s = String(state).toUpperCase();
+  if (s.includes("COMPLETED") || s === "READY")   return css.pill("#4ade80");
+  if (s.includes("RUNNING")   || s === "UPLOADING") return css.pill("#60a5fa");
+  if (s.includes("FAILED")    || s === "ERROR")    return css.pill("#f87171");
+  return css.pill("#d4d4a8");
+};
+
+// ─── App ─────────────────────────────────────────────────────────────────────
+
+export default function DevPage() {
+  const [secret, setSecret]   = useState("");
+  const [booted, setBooted]   = useState(false);
+  const [status, setStatus]   = useState(null);
+  const [error,  setError]    = useState(null);
+  const [notice, setNotice]   = useState(null);
+  const [busy,   setBusy]     = useState(false);
+
+  // Load secret from localStorage on first render.
+  useEffect(() => {
+    const saved = typeof localStorage !== "undefined" ? localStorage.getItem("gabriella_dev_secret") : null;
+    if (saved) setSecret(saved);
+    setBooted(true);
+  }, []);
+
+  const saveSecret = useCallback((val) => {
+    setSecret(val);
+    try { localStorage.setItem("gabriella_dev_secret", val); } catch {}
+  }, []);
+
+  const clearSecret = useCallback(() => {
+    setSecret("");
+    try { localStorage.removeItem("gabriella_dev_secret"); } catch {}
+  }, []);
+
+  const call = useCallback(async (url, options = {}) => {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+    return { ok: res.ok, status: res.status, data };
+  }, [secret]);
+
+  const refresh = useCallback(async () => {
+    if (!secret) return;
+    setError(null);
+    try {
+      const [whoami, list, finetune, watch, config] = await Promise.all([
+        call("/api/fireworks/whoami"),
+        call("/api/bootstrap/list"),
+        call("/api/fireworks/finetune"),
+        call("/api/learn/watch"),
+        call("/api/fireworks/config"),
+      ]);
+      if (whoami.status === 401) {
+        setError("Unauthorized — check the secret.");
+        return;
+      }
+      setStatus({ whoami: whoami.data, list: list.data, finetune: finetune.data, watch: watch.data, config: config.data });
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+  }, [secret, call]);
+
+  // Initial + periodic refresh.
+  useEffect(() => {
+    if (!secret) return;
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [secret, refresh]);
+
+  const doAction = useCallback(async (url, { method = "GET", successMsg, body } = {}) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await call(url, { method, body: body ? JSON.stringify(body) : undefined });
+      if (res.ok) {
+        setNotice(successMsg || "Done.");
+      } else {
+        setError(`${res.status}: ${JSON.stringify(res.data).slice(0, 500)}`);
+      }
+      await refresh();
+      return res;
+    } catch (err) {
+      setError(String(err.message || err));
+    } finally {
+      setBusy(false);
+    }
+  }, [call, refresh]);
+
+  if (!booted) return <div style={css.shell}>loading…</div>;
+
+  // ─── Unauthed view ────────────────────────────────────────────────────────
+
+  if (!secret) {
+    return (
+      <div style={css.shell}>
+        <div style={{ ...css.wrap, maxWidth: 420, paddingTop: 80 }}>
+          <h1 style={css.h1}>Gabriella — dev</h1>
+          <p style={css.subtitle}>Enter your CRON_SECRET to unlock.</p>
+          <form onSubmit={(e) => { e.preventDefault(); saveSecret(e.target.secret.value); }}>
+            <label style={css.label}>CRON_SECRET</label>
+            <input
+              name="secret" type="password" style={css.input}
+              autoComplete="off" autoFocus
+              placeholder="paste the secret from Vercel env vars"
+            />
+            <div style={css.btnRow}>
+              <button type="submit" style={css.btnP}>Unlock</button>
+            </div>
+          </form>
+          <p style={{ ...css.subtitle, marginTop: 16 }}>
+            Stored only in this browser's localStorage. Clear it any time with the "lock" button.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Authed view ──────────────────────────────────────────────────────────
+
+  const whoami   = status?.whoami;
+  const archives = status?.list?.archiveKeys || [];
+  const dsList   = Array.isArray(status?.finetune?.datasets) ? status.finetune.datasets : [];
+  const jobs     = Array.isArray(status?.finetune?.jobs)     ? status.finetune.jobs     : [];
+  const watch    = status?.watch;
+  const cfg      = status?.config?.config;
+  const cfgSrc   = status?.config?.sources || {};
+
+  return (
+    <div style={css.shell}>
+      <div style={css.wrap}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 8 }}>
+          <div>
+            <h1 style={css.h1}>Gabriella — dev</h1>
+            <p style={css.subtitle}>
+              {whoami?.configuredAccountId ? `account: ${whoami.configuredAccountId} ✓` : "checking credentials…"}
+              {" · auto-refresh 30s"}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button style={css.btn} onClick={() => refresh()}>↻</button>
+            <button style={css.btn} onClick={() => clearSecret()}>🔒</button>
+          </div>
+        </div>
+
+        {error  && <div style={css.error}>{error}</div>}
+        {notice && <div style={css.success}>{notice}</div>}
+
+        {/* ─── Account + speaker state ─────────────────────────────────── */}
+        <div style={css.card}>
+          <div style={css.cardTitle}>Speaker state</div>
+          <div style={css.kv}>
+            <span style={css.kvKey}>Active fine-tune</span>
+            <span style={css.kvVal}>{watch?.speaker?.activeModel || "— (Groq fallback)"}</span>
+          </div>
+          <div style={css.kv}>
+            <span style={css.kvKey}>Circuit breaker</span>
+            <span style={css.kvVal}>{watch?.speaker?.breakerState || watch?.speaker?.consecutiveErrors != null ? `${watch.speaker.consecutiveErrors} errors` : "ok"}</span>
+          </div>
+          <div style={css.kv}>
+            <span style={css.kvKey}>Pending job</span>
+            <span style={css.kvVal}>
+              {watch?.pending ? `${watch.pending.jobId} `  : "none"}
+              {watch?.pending && <span style={pillFor(watch.pending.state)}>{watch.pending.state}</span>}
+            </span>
+          </div>
+          <div style={css.btnRow}>
+            {watch?.speaker?.activeModel && (
+              <button
+                style={css.btnD}
+                disabled={busy}
+                onClick={() => {
+                  if (!confirm("Clear the active fine-tune and fall back to Groq?")) return;
+                  doAction("/api/learn/watch", { method: "DELETE", successMsg: "Active fine-tune cleared. Chat now uses Groq." });
+                }}
+              >
+                Rollback to Groq
+              </button>
+            )}
+            {watch?.pending && (
+              <button
+                style={css.btn}
+                disabled={busy}
+                onClick={() => doAction("/api/learn/watch", { successMsg: "Polled." })}
+              >
+                Poll now
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ─── Archives ──────────────────────────────────────────────────── */}
+        <div style={css.card}>
+          <div style={css.cardTitle}>Upstash archives ({archives.length})</div>
+          {archives.length === 0 && <div style={css.subtitle}>No archives yet. Run bootstrap in the codespace first.</div>}
+          {archives.slice(-5).reverse().map((k) => (
+            <div key={k} style={css.kv}>
+              <span style={css.kvKey}>{k.split(":").pop()}</span>
+              <span style={css.kvVal}>{k.includes(":bootstrap:") ? "bootstrap" : "cot"}</span>
+            </div>
+          ))}
+          <div style={css.btnRow}>
+            <button
+              style={css.btnP}
+              disabled={busy || archives.length === 0}
+              onClick={() => doAction("/api/bootstrap/push", { successMsg: "Pushed newest archive to Fireworks." })}
+            >
+              Push newest → Fireworks
+            </button>
+          </div>
+        </div>
+
+        {/* ─── Fireworks datasets ────────────────────────────────────────── */}
+        <div style={css.card}>
+          <div style={css.cardTitle}>Fireworks datasets ({dsList.length})</div>
+          {dsList.length === 0 && <div style={css.subtitle}>No datasets yet. Push from Upstash above.</div>}
+          {dsList.slice(0, 10).map((d) => (
+            <div key={d.id} style={css.kv}>
+              <span style={css.kvKey}>{d.id}</span>
+              <span style={css.kvVal}>
+                {d.exampleCount ? `${d.exampleCount} ex · ` : ""}<span style={pillFor(d.state)}>{d.state}</span>
+              </span>
+            </div>
+          ))}
+          <div style={css.btnRow}>
+            <button
+              style={css.btnP}
+              disabled={busy || dsList.length === 0}
+              onClick={() => {
+                if (!confirm("Launch a fine-tune job on the newest READY dataset?")) return;
+                doAction("/api/fireworks/finetune?launch=1", { successMsg: "SFT job launched. Check 'Speaker state' for progress." });
+              }}
+            >
+              Launch fine-tune (newest dataset)
+            </button>
+          </div>
+        </div>
+
+        {/* ─── Jobs ──────────────────────────────────────────────────────── */}
+        <div style={css.card}>
+          <div style={css.cardTitle}>Fine-tune jobs ({jobs.length})</div>
+          {jobs.length === 0 && <div style={css.subtitle}>No jobs yet.</div>}
+          {jobs.slice(0, 6).map((j) => (
+            <div key={j.id} style={css.kv}>
+              <span style={css.kvKey}>{j.displayName || j.id}</span>
+              <span style={css.kvVal}>
+                <span style={pillFor(j.state)}>{(j.state || "").replace("JOB_STATE_", "")}</span>
+                {j.outputModel && " ✓"}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* ─── Config ────────────────────────────────────────────────────── */}
+        <div style={css.card}>
+          <div style={css.cardTitle}>Fine-tune hyperparameters</div>
+          <ConfigEditor cfg={cfg} sources={cfgSrc} busy={busy} onSave={async (patch) => {
+            const qs = new URLSearchParams(patch).toString();
+            await doAction(`/api/fireworks/config?${qs}`, { successMsg: "Config saved." });
+          }} onReset={async () => {
+            if (!confirm("Wipe all overrides? Env vars + defaults will take effect.")) return;
+            await doAction("/api/fireworks/config?reset=1", { successMsg: "All overrides cleared." });
+          }} />
+        </div>
+
+        {/* ─── Raw status (debug) ────────────────────────────────────────── */}
+        <details style={{ ...css.card, cursor: "pointer" }}>
+          <summary style={{ fontSize: 13, color: "#a0a0b0" }}>Raw status payload</summary>
+          <pre style={css.code}>{JSON.stringify(status, null, 2)}</pre>
+        </details>
+
+        <p style={{ ...css.subtitle, textAlign: "center", marginTop: 24 }}>
+          Status updates every 30 seconds. Mutations refresh instantly.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Config editor subcomponent ───────────────────────────────────────────────
+
+function ConfigEditor({ cfg, sources, busy, onSave, onReset }) {
+  const [draft, setDraft] = useState({});
+
+  // Reset the draft every time the live config changes.
+  useEffect(() => { setDraft({}); }, [cfg]);
+
+  if (!cfg) return <div style={css.subtitle}>loading config…</div>;
+
+  const fields = [
+    { key: "epochs",       label: "Epochs",        hint: "1–20. Higher = tighter fit, overfit risk on small data." },
+    { key: "loraRank",     label: "LoRA rank",     hint: "1–128. Higher = more capacity, slower training." },
+    { key: "learningRate", label: "Learning rate", hint: "Default 0.0001. Lower if loss explodes." },
+    { key: "batchSize",    label: "Batch size",    hint: "Leave blank for Fireworks auto-pick." },
+    { key: "baseModel",    label: "Base model",    hint: "Full resource path (accounts/fireworks/models/...).", wide: true },
+  ];
+
+  const change = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+  const dirty  = Object.keys(draft).length > 0;
+
+  return (
+    <>
+      <div style={css.grid2}>
+        {fields.map((f) => (
+          <div key={f.key} style={f.wide ? { gridColumn: "1 / -1" } : null}>
+            <label style={css.label}>
+              {f.label}{" "}
+              <span style={{ color: "#555" }}>
+                ({sources[f.key] || "default"})
+              </span>
+            </label>
+            <input
+              style={css.input}
+              defaultValue={cfg[f.key] ?? ""}
+              placeholder={f.hint}
+              onChange={(e) => change(f.key, e.target.value)}
+            />
+          </div>
+        ))}
+      </div>
+      <div style={css.btnRow}>
+        <button
+          style={css.btnP}
+          disabled={busy || !dirty}
+          onClick={() => onSave(draft)}
+        >
+          Save changes
+        </button>
+        <button
+          style={css.btn}
+          disabled={busy}
+          onClick={() => setDraft({})}
+        >
+          Discard
+        </button>
+        <button
+          style={css.btnD}
+          disabled={busy}
+          onClick={onReset}
+        >
+          Reset all to defaults
+        </button>
+      </div>
+    </>
+  );
+}

@@ -46,13 +46,18 @@ export async function GET(req) {
 
   try {
     const cfg = fireworksConfig();
+
+    // Always load speaker state so the response is useful even without a
+    // pending job — the dev UI needs this to show what's active.
+    const speaker = await loadSpeakerStatus(redis, USER_ID).catch(() => null);
+
     if (!fireworksReady(cfg)) {
-      return json({ ok: true, skipped: true, reason: "Fireworks credentials not configured" });
+      return json({ ok: true, skipped: true, reason: "Fireworks credentials not configured", speaker });
     }
 
     const pending = await loadPendingJob(redis, USER_ID);
     if (!pending) {
-      return json({ ok: true, skipped: true, reason: "no pending job" });
+      return json({ ok: true, skipped: true, reason: "no pending job", speaker, pending: null });
     }
 
     const status = await getSftJob({
@@ -68,7 +73,9 @@ export async function GET(req) {
         ok:        true,
         action:    "still-running",
         job:       pending,
+        pending:   { ...pending, state },
         state,
+        speaker,
       });
     }
 
@@ -84,7 +91,7 @@ export async function GET(req) {
           error:       status.error,
         }),
       ]);
-      return json({ ok: true, action: "cleared-failed", state, error: status.error });
+      return json({ ok: true, action: "cleared-failed", state, error: status.error, speaker, pending: null });
     }
 
     // COMPLETED — deploy (best-effort) and activate.
@@ -125,11 +132,13 @@ export async function GET(req) {
         action:  "activated",
         modelId: status.modelId,
         deploy,
+        speaker: { ...speaker, activeModel: status.modelId },
+        pending: null,
       });
     }
 
     // Unknown terminal state.
-    return json({ ok: true, action: "unknown-terminal-state", state });
+    return json({ ok: true, action: "unknown-terminal-state", state, speaker, pending });
 
   } catch (err) {
     console.error("Watch route failed:", err);
