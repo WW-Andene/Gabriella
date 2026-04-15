@@ -44,7 +44,7 @@ import { recordGauntletOutcome }                            from "../../../lib/g
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
 import { premiumModel, unifiedCognition }                   from "../../../lib/gabriella/models.js";
-import { pickClient }                                       from "../../../lib/gabriella/groqPool.js";
+import { pickClient, withKeyRotation }                      from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
 import { logError }                                         from "../../../lib/gabriella/debugLog.js";
 
@@ -483,7 +483,7 @@ Respond the way a real person responds to ${pragmatics.act === "phatic" ? "a gre
 
 Output only the response text. No <think> block needed for this — it's not that kind of moment.`;
 
-  const result = await pickClient().chat.completions.create({
+  const result = await withKeyRotation(client => client.chat.completions.create({
     model: premiumModel(),
     messages: [
       { role: "system", content: systemPrompt + fastDirective },
@@ -494,7 +494,7 @@ Output only the response text. No <think> block needed for this — it's not tha
     top_p:             0.92,
     frequency_penalty: 0.3,
     presence_penalty:  0.3,
-  });
+  }));
 
   let text = result.choices[0].message.content.trim();
   // Strip any stray <think> block if the model wrote one anyway.
@@ -537,12 +537,12 @@ Return ONLY JSON matching this shape. Keep charge/emotional/want/resist concise 
 }`;
 
   try {
-    const result = await pickClient().chat.completions.create({
+    const result = await withKeyRotation(client => client.chat.completions.create({
       model: premiumModel(),
       messages: [{ role: "user", content: prompt }],
       temperature: 0.7,
       max_tokens: 400,
-    });
+    }));
     const raw = (result.choices[0].message.content || "").trim().replace(/```(?:json)?/g, "").trim();
     const feltState = JSON.parse(raw);
     return {

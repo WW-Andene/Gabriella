@@ -12,6 +12,7 @@ export const maxDuration = 30;
 export const runtime     = "nodejs";
 
 import { Redis } from "@upstash/redis";
+import { poolStats } from "../../../lib/gabriella/groqPool.js";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -181,6 +182,12 @@ export async function GET(req) {
   if (!redisProbe.ok)  problems.push(`❌ Upstash Redis unreachable: ${redisProbe.reason || redisProbe.error}`);
   if (!vectorProbe.ok) problems.push(`⚠ Upstash Vector unreachable: ${vectorProbe.reason || vectorProbe.error} (resonant memory will be skipped)`);
   if (!groqProbe.ok)   problems.push(`❌ Groq unreachable: ${groqProbe.reason || groqProbe.error} (chat will fail)`);
+  const pool = poolStats();
+  if (pool.keyCount > 0 && pool.aliveCount === 0) {
+    problems.push(`❌ All ${pool.keyCount} Groq key(s) marked dead this process. Check Groq account status — "organization_restricted" or revoked keys.`);
+  } else if (pool.deadKeys?.length > 0) {
+    problems.push(`⚠ ${pool.deadKeys.length} of ${pool.keyCount} Groq key(s) dead (keys #${pool.deadKeys.join(", #")}). Chat still works on remaining keys.`);
+  }
   if (!fireworksProbe.ok && fireworksProbe.reason !== "FIREWORKS_API_KEY or FIREWORKS_ACCOUNT_ID not set") {
     problems.push(`⚠ Fireworks unreachable: ${fireworksProbe.error} (fine-tune will fail)`);
   }
@@ -200,6 +207,7 @@ export async function GET(req) {
       chatCanWork:        redisProbe.ok && groqProbe.ok,
       fineTuneCanWork:    fireworksProbe.ok,
       poolSize:           countGroqKeys(),
+      pool:               poolStats(),
     },
     timestamp: new Date().toISOString(),
   });
