@@ -267,7 +267,7 @@ export async function POST(req) {
     // 4. Speaker receives felt-state + deliberation + messages.
     //    Passing redis lets the speaker route to Fireworks if a
     //    fine-tune has been activated, with automatic Groq fallback.
-    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics);
+    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics, affectState);
     const { innerThought: thought1, response: candidate, uncertain: uncertain1 } = parseMonologue(rawCandidate);
 
     // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
@@ -314,7 +314,7 @@ export async function POST(req) {
         resist: `${taggedFeltState.resist}. ${constraintBullets}`,
       };
 
-      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics);
+      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics, affectState);
       const { innerThought: thought2, response: retry, uncertain: uncertain2 } = parseMonologue(rawRetry);
 
       const retryHeuristic = heuristicCheck(retry, dynamicBanned);
