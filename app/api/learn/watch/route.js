@@ -42,10 +42,7 @@ const redis = new Redis({
 const USER_ID = "user_default";
 
 export async function GET(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   try {
     const cfg = fireworksConfig();
@@ -143,10 +140,7 @@ export async function GET(req) {
 // Inspection — useful when debugging from mobile:
 //   POST /api/learn/watch   → returns pending job + current speaker state
 export async function POST(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   const [pending, speaker] = await Promise.all([
     loadPendingJob(redis, USER_ID),
@@ -160,13 +154,19 @@ export async function POST(req) {
 // Useful if the fine-tune is producing bad outputs and you want to roll
 // back without touching env vars.
 export async function DELETE(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   await clearActiveSpeakerModel(redis, "manual rollback via DELETE", USER_ID);
   return json({ ok: true, cleared: true });
+}
+
+function authorized(req) {
+  if (!process.env.CRON_SECRET) return true;
+  const auth = req.headers.get("authorization");
+  if (auth === `Bearer ${process.env.CRON_SECRET}`) return true;
+  const url = new URL(req.url);
+  if (url.searchParams.get("key") === process.env.CRON_SECRET) return true;
+  return false;
 }
 
 function isTerminal(state) {

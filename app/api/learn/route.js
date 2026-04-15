@@ -37,10 +37,7 @@ const USER_ID      = "user_default";
 const MIN_EXAMPLES = 10;
 
 export async function GET(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   try {
     // 1 + 2. Upload.
@@ -65,16 +62,24 @@ export async function GET(req) {
 }
 
 export async function POST(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   const url     = new URL(req.url);
   const limit   = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 20)));
   const history = await getLearningHistory(redis, USER_ID, { limit });
 
   return json({ ok: true, history });
+}
+
+// Auth accepted via either Authorization: Bearer header OR ?key=<CRON_SECRET>
+// query param — the query form is for mobile browser convenience.
+function authorized(req) {
+  if (!process.env.CRON_SECRET) return true; // unset = open (dev mode)
+  const auth = req.headers.get("authorization");
+  if (auth === `Bearer ${process.env.CRON_SECRET}`) return true;
+  const url = new URL(req.url);
+  if (url.searchParams.get("key") === process.env.CRON_SECRET) return true;
+  return false;
 }
 
 function json(body, status = 200) {
