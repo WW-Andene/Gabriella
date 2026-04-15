@@ -32,6 +32,7 @@ import { pickClient }      from "../../../lib/gabriella/groqPool.js";
 import { loadChronology }  from "../../../lib/gabriella/chronology.js";
 import { loadPerson }      from "../../../lib/gabriella/person.js";
 import { rewriteNarrative } from "../../../lib/gabriella/narrative.js";
+import { evolveSubstrate } from "../../../lib/gabriella/substrateEvolution.js";
 import { listActiveUsers, DEFAULT_USER } from "../../../lib/gabriella/users.js";
 
 const redis = new Redis({
@@ -87,8 +88,14 @@ async function sleepForUser(userId) {
       return { userId, skipped: true, reason: "not enough recent episodes", seen: recentWindow.length };
     }
 
+    // Extract her visible replies from the recent window for substrate
+    // evolution. Each episode has a `reply` field (her response text).
+    const recentResponses = recentWindow
+      .map(e => e.reply || e.r || "")
+      .filter(s => typeof s === "string" && s.length > 10);
+
     // Run consolidation passes in parallel where independent.
-    const [soulUpdate, newImprints, prunedWithheld, trimmedBanned, narrativeUpdate] = await Promise.all([
+    const [soulUpdate, newImprints, prunedWithheld, trimmedBanned, narrativeUpdate, substrateDelta] = await Promise.all([
       consolidateSoul(memory, recentWindow),
       formImprints(recentWindow),
       pruneWithheld(userId),
@@ -98,6 +105,10 @@ async function sleepForUser(userId) {
       rewriteNarrative(redis, userId, {
         messages: [], memory, chronology, person, recentFs,
       }).catch(() => null),
+      // Phase 5 meta-loop: evolve her substrate from her recent actual
+      // usage — update reaches-for boosts, detect emerging phrases, catch
+      // current lexical ruts. Pure text analysis, no LLM calls.
+      evolveSubstrate(redis, userId, recentResponses).catch(() => null),
     ]);
 
     if (soulUpdate) {
@@ -119,6 +130,12 @@ async function sleepForUser(userId) {
       withheldPruned:     prunedWithheld,
       bannedTrimmed:      trimmedBanned,
       narrativeRewritten: !!narrativeUpdate?.text,
+      substrateEvolved:   !!substrateDelta,
+      substrateSummary:   substrateDelta ? {
+        boostWords:     Object.keys(substrateDelta.reachesForBoost || {}).length,
+        emergingCount:  (substrateDelta.emergingPhrases || []).length,
+        rutWord:        substrateDelta.lexicalRutWord || null,
+      } : null,
     };
   } catch (err) {
     return { userId, error: err?.message || String(err) };
