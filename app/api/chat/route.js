@@ -145,7 +145,21 @@ export async function POST(req) {
       trajectory,
       phase,
       self,
+      _phaseTimings,
     } = await buildGabriella(messages, { userId, ephemeral });
+
+    // Per-turn prompt-size audit — record approximate token count for
+    // the full system prompt + count of populated vs empty blocks.
+    // Zero LLM cost, ~one Redis write per turn. Surfaced on /stats.
+    const promptChars = (systemPrompt || "").length;
+    const promptTokensApprox = Math.ceil(promptChars / 4);
+    redis.lpush(`${userId}:prompt:sizes`, JSON.stringify({
+      at:         Date.now(),
+      chars:      promptChars,
+      tokensApprox: promptTokensApprox,
+      phaseTimings: _phaseTimings || null,
+    })).catch(() => null);
+    redis.ltrim(`${userId}:prompt:sizes`, 0, 199).catch(() => null);
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
     const [withheldRaw, dynamicBanned] = await Promise.all([

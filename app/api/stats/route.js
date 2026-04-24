@@ -182,6 +182,44 @@ export async function GET(req) {
     // ─── LLM call audit — today's rollup + last-hour window ──────────────
     const callAudit = await loadAuditStats(redis);
 
+    // ─── Prompt-size audit — last 50 turns of system-prompt size + phase timings
+    const promptSizeRaw = await safeLRange(`${userId}:prompt:sizes`, 0, 49);
+    const promptSizes = (promptSizeRaw || []).map(r => {
+      try { return typeof r === "string" ? JSON.parse(r) : r; } catch { return null; }
+    }).filter(Boolean);
+    let promptAudit = null;
+    if (promptSizes.length > 0) {
+      const chars    = promptSizes.map(s => s.chars || 0);
+      const tokens   = promptSizes.map(s => s.tokensApprox || 0);
+      const avgChars = chars.reduce((a, b) => a + b, 0) / chars.length;
+      const maxChars = Math.max(...chars);
+      const avgTok   = tokens.reduce((a, b) => a + b, 0) / tokens.length;
+      const maxTok   = Math.max(...tokens);
+      // Aggregate phase timings
+      const timingKeys = new Set();
+      for (const s of promptSizes) {
+        if (s.phaseTimings) for (const k of Object.keys(s.phaseTimings)) timingKeys.add(k);
+      }
+      const avgTimings = {};
+      for (const k of timingKeys) {
+        const vals = promptSizes.map(s => s.phaseTimings?.[k]).filter(v => typeof v === "number");
+        if (vals.length > 0) {
+          avgTimings[k] = {
+            avg: +Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
+            max: Math.max(...vals),
+            p50: vals.sort((a, b) => a - b)[Math.floor(vals.length * 0.5)],
+            p95: vals.sort((a, b) => a - b)[Math.floor(vals.length * 0.95)] || null,
+          };
+        }
+      }
+      promptAudit = {
+        samples: promptSizes.length,
+        chars:   { avg: +avgChars.toFixed(0), max: maxChars },
+        tokensApprox: { avg: +avgTok.toFixed(0), max: maxTok },
+        phaseTimingsMs: avgTimings,
+      };
+    }
+
     // ─── Gauntlet stats — per-check rejection distribution ──────────────
     const gauntletStats = await loadMetaRegister(redis, userId).catch(() => null);
 
@@ -213,6 +251,7 @@ export async function GET(req) {
       pool,
       breakers,
       callAudit,
+      promptAudit,
       gauntlet: gauntletStats,
       readiness,
     };

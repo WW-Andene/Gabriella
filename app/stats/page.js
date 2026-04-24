@@ -81,7 +81,7 @@ export default function StatsPage() {
   }
   if (!data) return null;
 
-  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, gauntlet, readiness } = data;
+  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, promptAudit, gauntlet, readiness } = data;
 
   return (
     <div style={css.shell}>
@@ -283,6 +283,36 @@ export default function StatsPage() {
             </>
           ) : (
             <div style={{fontSize: 13, color: "#8a8a99"}}>not enough samples yet (min 3)</div>
+          )}
+        </div>
+
+        {/* PROMPT-SIZE AUDIT */}
+        <div style={css.card}>
+          <div style={css.cardT}>Prompt size + engine timings ({promptAudit?.samples ?? 0} turns)</div>
+          {promptAudit ? (
+            <>
+              <div style={css.kv}>
+                <span style={css.k}>system prompt chars</span>
+                <span style={css.v}>avg {promptAudit.chars.avg} · max {promptAudit.chars.max}</span>
+              </div>
+              <div style={css.kv}>
+                <span style={css.k}>system prompt tokens ≈</span>
+                <span style={css.v}>avg {promptAudit.tokensApprox.avg} · max {promptAudit.tokensApprox.max}</span>
+              </div>
+              {promptAudit.phaseTimingsMs && Object.keys(promptAudit.phaseTimingsMs).length > 0 && (
+                <div style={{marginTop: 8}}>
+                  <div style={{fontSize: 10, letterSpacing: 0.8, color: "#8a8a99", textTransform: "uppercase", marginBottom: 4}}>engine phase (ms)</div>
+                  {Object.entries(promptAudit.phaseTimingsMs).map(([phase, stats]) => (
+                    <div key={phase} style={css.kv}>
+                      <span style={css.k}>{phase}</span>
+                      <span style={css.v}>avg {stats.avg} · p50 {stats.p50} · p95 {stats.p95 ?? "—"} · max {stats.max}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{fontSize: 13, color: "#8a8a99"}}>not enough samples yet</div>
           )}
         </div>
 
