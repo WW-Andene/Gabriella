@@ -149,6 +149,23 @@ jobs:
             echo "signed=false"                  >> $GITHUB_OUTPUT
           fi
 
+      - name: Pre-configure Bubblewrap (skip JDK/SDK prompts)
+        run: |
+          # Without this file, `bubblewrap init` prompts interactively
+          # for JDK + Android SDK locations. In non-TTY CI that aborts
+          # the step with exit 130. Seeding ~/.bubblewrap/config.json
+          # with the paths that setup-java + setup-android already
+          # provisioned lets init + update + build run unattended.
+          mkdir -p ~/.bubblewrap
+          cat > ~/.bubblewrap/config.json <<EOF
+          {
+            "jdkPath": "${JAVA_HOME}",
+            "androidSdkPath": "${ANDROID_HOME}"
+          }
+          EOF
+          echo "--- ~/.bubblewrap/config.json ---"
+          cat ~/.bubblewrap/config.json
+
       - name: Bubblewrap init + build
         env:
           HOST:                 ${{ steps.inputs.outputs.host }}
