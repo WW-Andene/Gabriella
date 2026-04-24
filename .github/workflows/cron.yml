@@ -1,0 +1,91 @@
+name: Cron
+
+# Replaces the Vercel `crons` section from vercel.json. GitHub Actions
+# schedules the same 8 endpoints by hitting them over HTTPS against the
+# deployed host.
+#
+# Configuration (one-time):
+#   - Repo variable  APP_HOST    — the deployed hostname (no scheme),
+#                                  e.g. app.example.com. If unset the
+#                                  workflow no-ops so it's safe to leave
+#                                  merged while the app isn't deployed.
+#   - Repo secret    CRON_SECRET — bearer token the endpoint checks
+#                                  before running (recommended so the
+#                                  public cron runner can't be abused).
+#
+# Each cron line below corresponds to exactly one API path; the routing
+# step maps github.event.schedule → path. Adding a new cron = add a new
+# schedule line here + a new case in the routing step.
+#
+# Manual testing: use the workflow_dispatch form and pass the path
+# directly, e.g. "/api/inner-loop".
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # /api/inner-loop
+    - cron: "0 */6 * * *"    # /api/think
+    - cron: "0 6 * * *"      # /api/sleep
+    - cron: "0 6 * * 1"      # /api/learn
+    - cron: "7 * * * *"      # /api/learn/watch
+    - cron: "17 * * * *"     # /api/initiate
+    - cron: "0 12 * * *"     # /api/eval
+    - cron: "0 10 * * 0"     # /api/digest
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "API path to hit (e.g. /api/inner-loop)"
+        required: true
+        default: "/api/inner-loop"
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve path from schedule or dispatch input
+        id: route
+        env:
+          SCHEDULE:     ${{ github.event.schedule }}
+          DISPATCH_PATH: ${{ github.event.inputs.path }}
+        run: |
+          case "$SCHEDULE" in
+            "*/10 * * * *") P="/api/inner-loop" ;;
+            "0 */6 * * *")  P="/api/think"      ;;
+            "0 6 * * *")    P="/api/sleep"      ;;
+            "0 6 * * 1")    P="/api/learn"      ;;
+            "7 * * * *")    P="/api/learn/watch" ;;
+            "17 * * * *")   P="/api/initiate"   ;;
+            "0 12 * * *")   P="/api/eval"       ;;
+            "0 10 * * 0")   P="/api/digest"     ;;
+            *)              P="$DISPATCH_PATH"  ;;
+          esac
+          if [ -z "$P" ]; then
+            echo "Could not resolve path (schedule='$SCHEDULE', dispatch='$DISPATCH_PATH')" >&2
+            exit 1
+          fi
+          echo "path=$P" >> "$GITHUB_OUTPUT"
+
+      - name: Hit endpoint
+        env:
+          APP_HOST:    ${{ vars.APP_HOST }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          API_PATH:    ${{ steps.route.outputs.path }}
+        run: |
+          if [ -z "$APP_HOST" ]; then
+            echo "APP_HOST repo variable is not set — skipping (safe no-op)."
+            echo "Set it once the app is deployed to re-enable cron runs."
+            exit 0
+          fi
+          URL="https://${APP_HOST}${API_PATH}"
+          echo "POST $URL"
+          HEADERS=(-H "Content-Type: application/json")
+          if [ -n "$CRON_SECRET" ]; then
+            HEADERS+=(-H "Authorization: Bearer $CRON_SECRET")
+          fi
+          # Vercel crons issue a GET by default, so mirror that.
+          curl -sS -fL --max-time 120 --retry 2 --retry-delay 5 \
+            "${HEADERS[@]}" \
+            "$URL"

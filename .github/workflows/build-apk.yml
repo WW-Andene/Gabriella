@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       host:
-        description: "Deployed host (e.g. gabriella.vercel.app)"
+        description: "Deployed host embedded in the APK (placeholder ok — the build itself no longer requires a live deployment)"
         required: false
-        default: "gabriella.vercel.app"
+        default: "app.gabriella.example"
       appVersionCode:
         description: "Android versionCode (integer; must increment per Play release)"
         required: false
@@ -80,7 +80,7 @@ jobs:
         id: inputs
         run: |
           HOST="${{ github.event.inputs.host }}"
-          if [ -z "$HOST" ]; then HOST="gabriella.vercel.app"; fi
+          if [ -z "$HOST" ]; then HOST="app.gabriella.example"; fi
           VERSION_CODE="${{ github.event.inputs.appVersionCode }}"
           if [ -z "$VERSION_CODE" ]; then VERSION_CODE="${GITHUB_RUN_NUMBER}"; fi
           VERSION_NAME="${{ github.event.inputs.appVersionName }}"
@@ -90,6 +90,13 @@ jobs:
           echo "version_name=$VERSION_NAME"       >> $GITHUB_OUTPUT
 
       - name: Rewrite twa-manifest for this run
+        # host / fullScopeUrl determine the APK's runtime target (what the
+        # TWA opens when launched + the Digital Asset Links origin). Those
+        # stay as the user-supplied HOST.
+        #
+        # iconUrl / maskableIconUrl / webManifestUrl are fetched at BUILD
+        # time by bubblewrap; we point them at the local http server so
+        # the build works with no deployment.
         env:
           HOST:         ${{ steps.inputs.outputs.host }}
           VERSION_CODE: ${{ steps.inputs.outputs.version_code }}
@@ -101,39 +108,68 @@ jobs:
           const m = JSON.parse(fs.readFileSync(path, "utf8"));
           const host = process.env.HOST;
           m.host                 = host;
-          m.iconUrl              = `https://${host}/icon-512.png`;
-          m.maskableIconUrl      = `https://${host}/icon-512.png`;
-          m.webManifestUrl       = `https://${host}/manifest.webmanifest`;
           m.fullScopeUrl         = `https://${host}/`;
+          m.iconUrl              = "http://localhost:8080/icon-512.png";
+          m.maskableIconUrl      = "http://localhost:8080/icon-512.png";
+          m.webManifestUrl       = "http://localhost:8080/manifest.webmanifest";
           m.appVersionName       = process.env.VERSION_NAME;
           m.appVersionCode       = parseInt(process.env.VERSION_CODE, 10);
           fs.writeFileSync(path, JSON.stringify(m, null, 2));
           console.log("Patched twa-manifest.json for host=" + host);
           NODE
 
-      - name: Wait for production manifest to be reachable AND valid JSON
+      - name: Stage synthetic PWA manifest + icons and serve on localhost
+        # The app isn't deployed yet, so there's no live manifest URL for
+        # bubblewrap init to fetch. Instead we materialise a minimal PWA
+        # bundle (manifest.webmanifest + two PNG icons at the sizes the
+        # manifest advertises) and serve it from a local HTTP server.
+        # bubblewrap init is pointed at http://localhost:8080/... and the
+        # committed twa-manifest.json is copied over the generated one
+        # afterwards, so the final APK still embeds the real host from
+        # twa-manifest.json (input `host` above).
         run: |
-          HOST="${{ steps.inputs.outputs.host }}"
-          URL="https://${HOST}/manifest.webmanifest"
+          mkdir -p pwa-serve
+          cat > pwa-serve/manifest.webmanifest <<'JSON'
+          {
+            "name": "Gabriella",
+            "short_name": "Gabriella",
+            "description": "A chat interface with memory, presence, and interiority.",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "portrait",
+            "theme_color": "#08080f",
+            "background_color": "#08080f",
+            "lang": "en",
+            "dir": "ltr",
+            "icons": [
+              { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+              { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+            ],
+            "categories": ["social", "lifestyle", "productivity"]
+          }
+          JSON
+          # Generate solid-colour PNG placeholders at the advertised sizes.
+          # ImageMagick is preinstalled on ubuntu-latest.
+          convert -size 192x192 xc:"#08080f" pwa-serve/icon-192.png
+          convert -size 512x512 xc:"#08080f" pwa-serve/icon-512.png
+          ls -la pwa-serve
+          # Background HTTP server on :8080
+          cd pwa-serve
+          python3 -m http.server 8080 > /tmp/pwa-server.log 2>&1 &
+          echo $! > /tmp/pwa-server.pid
+          cd ..
+          # Wait for the server to answer
           for i in $(seq 1 10); do
-            BODY=$(curl -sf "$URL" || true)
-            if [ -n "$BODY" ]; then
-              # Must be JSON (starts with `{`) and parse cleanly. If Next.js
-              # is serving a 200-HTML error page (as happened on the first
-              # failing CI run), bubblewrap crashes with "Unexpected token
-              # '<', '<!doctype'" — cheaper to fail here with a clearer
-              # message.
-              if printf '%s' "$BODY" | node -e "let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ const j=JSON.parse(d); if(!j.name) process.exit(2); console.log('manifest ok — name=', j.name); }catch(e){ console.error('manifest not valid JSON:', e.message); process.exit(3); } })"; then
-                exit 0
-              fi
-              echo "Attempt $i: manifest reachable but not valid JSON (got $(echo "$BODY" | head -c 80)…). Sleeping 6s" >&2
-            else
-              echo "Attempt $i: manifest URL not reachable; sleeping 6s"
+            if curl -sf http://localhost:8080/manifest.webmanifest >/dev/null; then
+              echo "Local manifest server is up"
+              exit 0
             fi
-            sleep 6
+            echo "Waiting for local server (attempt $i)…"
+            sleep 1
           done
-          echo "Manifest never became valid JSON at $URL" >&2
-          curl -sv "$URL" 2>&1 | head -40 >&2 || true
+          echo "Local server never came up" >&2
+          cat /tmp/pwa-server.log >&2 || true
           exit 1
 
       - name: Resolve or generate signing keystore
@@ -179,7 +215,6 @@ jobs:
 
       - name: Bubblewrap init + build
         env:
-          HOST:                 ${{ steps.inputs.outputs.host }}
           BW_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.keystore_password }}
           BW_KEY_PASSWORD:      ${{ steps.signing.outputs.key_password }}
           BW_KEY_ALIAS:         ${{ steps.signing.outputs.key_alias }}
@@ -187,18 +222,19 @@ jobs:
           set -e
           mkdir -p twa-build
           cd twa-build
-          # bubblewrap init's --manifest flag wants a URL to the live
-          # Web App Manifest; it ALWAYS fetches from that URL and
-          # generates a fresh twa-manifest.json + Android project
-          # scaffold. Our committed twa-manifest.json is then copied
-          # over the generated one to preserve custom packageId,
-          # colors, version, and signing config — and `update` is run
-          # to regenerate the Android project against our overrides.
+          # bubblewrap init's --manifest flag wants a URL to a Web App
+          # Manifest; it ALWAYS fetches from that URL and generates a
+          # fresh twa-manifest.json + Android project scaffold. We point
+          # it at the local HTTP server started in the previous step so
+          # the build runs entirely offline. Our committed
+          # twa-manifest.json is then copied over the generated one to
+          # preserve custom packageId, colors, version, signing config,
+          # AND the real production host — and `update` is run to
+          # regenerate the Android project against our overrides.
           # --skipPwaValidation skips the service-worker / icon-size
-          # eligibility checks that often 400 on a Next.js PWA even
-          # when it's fine for a TWA wrapper.
+          # eligibility checks.
           bubblewrap init \
-            --manifest "https://${HOST}/manifest.webmanifest" \
+            --manifest "http://localhost:8080/manifest.webmanifest" \
             --skipPwaValidation
           echo "--- init complete; overriding twa-manifest.json with committed version ---"
           cp ../twa-manifest.json ./twa-manifest.json
