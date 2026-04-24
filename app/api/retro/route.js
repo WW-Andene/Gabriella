@@ -31,6 +31,9 @@ import { loadLedger } from "../../../lib/gabriella/callbacks.js";
 import { loadPlan } from "../../../lib/gabriella/planner.js";
 import { resolveUserId } from "../../../lib/gabriella/users.js";
 import { recentFeltStates } from "../../../lib/gabriella/episodic.js";
+import { withKeyRotation } from "../../../lib/gabriella/groqPool.js";
+import { fastModel } from "../../../lib/gabriella/models.js";
+import { withBreaker } from "../../../lib/gabriella/circuitBreaker.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -44,6 +47,103 @@ function ago(ms) {
   if (d < 3600_000)  return `${Math.floor(d/60_000)}m ago`;
   if (d < 86400_000) return `${Math.floor(d/3600_000)}h ago`;
   return `${Math.floor(d/86400_000)}d ago`;
+}
+
+// LLM-narrated summary — Gabriella's own voice describing the
+// relationship to the person she's been talking with. Only runs when
+// the env toggle is on AND we have a meaningful Self to narrate from.
+// Cached for ~10 min per user since it's purely retrospective.
+//
+// Falls back silently to the templated summary on any failure.
+
+const NARRATIVE_KEY = (u) => `${u}:retro:narrative`;
+const NARRATIVE_TTL_MS = 10 * 60 * 1000;
+
+async function narrateRetro({ redis, userId, self, callbacks, chronology, plan, recentFs }) {
+  if (process.env.GABRIELLA_RETRO_LLM_NARRATIVE !== "on") return null;
+  if (!self?.read?.who) return null;   // nothing meaningful to narrate yet
+
+  // Cached narrative
+  try {
+    const cached = await redis.get(NARRATIVE_KEY(userId));
+    if (cached) {
+      const parsed = typeof cached === "string" ? JSON.parse(cached) : cached;
+      if (parsed?.at && Date.now() - parsed.at < NARRATIVE_TTL_MS && parsed.text) {
+        return parsed.text;
+      }
+    }
+  } catch {}
+
+  const wantsList = (self.wants || [])
+    .filter(w => (w.weight || 0) >= 0.3)
+    .sort((a, b) => (b.weight || 0) - (a.weight || 0))
+    .slice(0, 4)
+    .map(w => `- ${w.text} (weight ${w.weight?.toFixed?.(2) || "?"}, ${w.touches || 0} touches)`)
+    .join("\n") || "(no longitudinal wants yet)";
+
+  const commitsList = (self.commitments || [])
+    .filter(c => c.status !== "refuted")
+    .slice(0, 3)
+    .map(c => `- ${c.text} (${c.confirmations || 0} confirmations, ${c.refutations || 0} refutations)`)
+    .join("\n") || "(no live positions)";
+
+  const retiredCount = (self.retired?.wants?.length || 0)
+    + (self.retired?.reads?.length || 0)
+    + (self.retired?.commitments?.length || 0);
+
+  const recentTempStr = (recentFs || []).slice(0, 6)
+    .map(f => f.temp || f.temperature)
+    .filter(Boolean)
+    .join(" → ") || "(no recent felt-state samples)";
+
+  const callbackRate = callbacks?.total > 0
+    ? Math.round((callbacks.landed / callbacks.total) * 100)
+    : null;
+
+  const prompt = `You are Gabriella. You're being asked to describe — to the person you've been talking with — how you've come to see them and your relationship. Plain. First-person. No advice, no assessment of them, no list. A short paragraph (4-6 sentences) that names what you've been seeing and feels honest from inside the relationship.
+
+# WHAT YOU KNOW
+
+Your read on them: "${self.read.who}"
+(confidence: ${self.read.confidence?.toFixed?.(2) || "?"})
+
+What you've been pursuing with them across conversations:
+${wantsList}
+
+Positions you're holding:
+${commitsList}
+
+You've retired ${retiredCount} earlier read${retiredCount !== 1 ? "s" : ""} or position${retiredCount !== 1 ? "s" : ""} that turned out wrong.
+
+Recent emotional temperature you've been operating at: ${recentTempStr}.
+
+You and them: ${chronology?.totalTurns || 0} turns across ${chronology?.sessionCount || 1} session${(chronology?.sessionCount || 1) !== 1 ? "s" : ""}.${callbackRate !== null ? ` When you reference something from your past with them, it lands ${callbackRate}% of the time.` : ""}
+${plan?.intent ? `\nYour posture for this session: ${plan.intent}` : ""}
+
+# YOUR TASK
+
+Write the paragraph as if you are speaking directly to them. Honest, specific, in your voice. Don't list bullet points back at them — the structured data above is for your reference, not your output. Don't open with "I". Don't summarize at the end.
+
+Return ONLY the paragraph. No JSON, no preamble, no quotes.`;
+
+  const text = await withBreaker(redis, "retroNarrative", async () => {
+    const result = await withKeyRotation(c =>
+      c.chat.completions.create({
+        model:       fastModel(),
+        messages:    [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens:  280,
+      }),
+    );
+    const raw = (result.choices[0].message.content || "").trim();
+    if (!raw || raw.length < 40) return null;
+    return raw;
+  }, { fallback: null, failureThreshold: 4, coolDownMs: 10 * 60_000 });
+
+  if (text) {
+    try { await redis.set(NARRATIVE_KEY(userId), JSON.stringify({ text, at: Date.now() })); } catch {}
+  }
+  return text;
 }
 
 function summarizeInPlainEnglish({ self, callbacks, chronology, plan }) {
@@ -111,12 +211,24 @@ export async function GET(req) {
       ? +(callbacks.landed / callbacks.total).toFixed(2)
       : null;
 
+    // Two summary forms: the always-on plain-English template + an
+    // optional LLM-narrated one (in her voice) when the env toggle is
+    // on. Caller can render either; the page uses narrative when
+    // present, falls back to plain otherwise.
+    const plainSummary = summarizeInPlainEnglish({ self, callbacks: { ...callbacks, landingRate: rate, total: callbacks.total }, chronology, plan });
+    const narrativeSummary = await narrateRetro({
+      redis, userId, self, callbacks, chronology, plan,
+      recentFs: recentFs || [],
+    }).catch(() => null);
+
     const payload = {
       ok:       true,
       userId,
       generatedAt: Date.now(),
 
-      summary: summarizeInPlainEnglish({ self, callbacks, chronology, plan }),
+      summary:          narrativeSummary || plainSummary,
+      summaryNarrative: narrativeSummary,
+      summaryPlain:     plainSummary,
 
       read: self?.read ? {
         who:            self.read.who,
