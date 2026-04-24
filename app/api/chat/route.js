@@ -112,7 +112,8 @@ function streamString(text, controller, encoder, perCharMs = { min: 4, max: 12 }
 
 export async function POST(req) {
   try {
-    const { messages } = await req.json();
+    const { messages, privacy: privacyFlag } = await req.json();
+    const ephemeral = privacyFlag === true;
 
     // Resolve user id (header / cookie / derived). Register for cron
     // iteration. All subsequent state is keyed to this userId.
@@ -144,7 +145,7 @@ export async function POST(req) {
       trajectory,
       phase,
       self,
-    } = await buildGabriella(messages, { userId });
+    } = await buildGabriella(messages, { userId, ephemeral });
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
     const [withheldRaw, dynamicBanned] = await Promise.all([
@@ -210,6 +211,9 @@ export async function POST(req) {
           await streamString(fastResponse, controller, encoder, fastCadence.perCharMs);
           controller.close();
 
+          // Privacy mode — skip all background persistence on fast-path too.
+          if (ephemeral) return;
+
           const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
           Promise.allSettled([
             updateGabriella(
@@ -217,7 +221,7 @@ export async function POST(req) {
               withheldCandidate, debtCall, activeAgenda, activeThreshold,
               currentRegister, currentAuthorial, ripeSeed,
               null, reasoningTrace,
-              { userId, pragmatics, chronology, self },
+              { userId, pragmatics, chronology, self, ephemeral },
             ),
             recordEpisode(redis, userId, {
               userMsg:   lastUser,
@@ -351,6 +355,11 @@ export async function POST(req) {
         // 8. Background — fire-and-forget after the client is served.
         //    The promises here must be defensively independent so one
         //    failure doesn't starve the others.
+        //    PRIVACY MODE: skip ALL background persistence. The user
+        //    chose an ephemeral session; nothing gets recorded beyond
+        //    what Redis has already transiently used for rate governors.
+        if (ephemeral) return;
+
         const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
 
         const bg = [

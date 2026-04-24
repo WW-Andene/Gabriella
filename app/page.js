@@ -164,6 +164,10 @@ export default function Home() {
   // dots are still animating. Cleared when the response finalizes so
   // the static innerThought panel takes over.
   const [peek, setPeek] = useState(null);
+  // Privacy mode — ephemeral session toggle. When on, request body
+  // includes { privacy: true } and server short-circuits all Redis
+  // persistence (memory, stream, self, episode, etc.).
+  const [privacyMode, setPrivacyMode] = useState(false);
   const bottomRef                   = useRef(null);
   const abortRef                    = useRef(null);
   const inputRef                    = useRef(null);
@@ -224,7 +228,7 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ messages: newMessages }),
+        body:    JSON.stringify({ messages: newMessages, privacy: privacyMode }),
         signal:  controller.signal,
       });
 
@@ -384,6 +388,29 @@ export default function Home() {
             <a href="/prefs"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>prefs</a>
             <a href="/stats"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>stats</a>
             <a href="/meet"   style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>about</a>
+
+            {/* Privacy mode — turns the current session ephemeral.
+                No memory, no stream, no self-model, no episode writes.
+                Useful when the user wants to talk about something
+                without it entering the long-term record. */}
+            <button
+              onClick={() => setPrivacyMode(v => !v)}
+              title={privacyMode ? "turn privacy mode OFF — conversation will be remembered" : "turn privacy mode ON — this session leaves no trace"}
+              style={{
+                background: privacyMode ? "rgba(200,130,130,0.14)" : "rgba(255,255,255,0.04)",
+                border: privacyMode ? "1px solid rgba(200,130,130,0.5)" : "1px solid rgba(255,255,255,0.09)",
+                color: privacyMode ? "rgba(255,200,200,0.9)" : "rgba(255,255,255,0.5)",
+                borderRadius: 14,
+                padding: "4px 10px",
+                fontSize: 11,
+                letterSpacing: "0.05em",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+                fontFamily: "inherit",
+              }}
+            >
+              {privacyMode ? "◐ private" : "○ private"}
+            </button>
 
             {/* Inner-life reveal toggle — makes her <think> block and felt-state
                 visible to the user when on. Unique to Gabriella; no competitor
