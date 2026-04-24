@@ -48,6 +48,7 @@ import { premiumModel }                                     from "../../../lib/g
 import { runTurn }                                          from "../../../lib/gabriella/turn.js";
 import { speculativeOpener, warmPrefix }                    from "../../../lib/gabriella/ttft.js";
 import { ingestTurn as graphIngestTurn }                   from "../../../lib/gabriella/graph.js";
+import { recordFingerprintTurn }                           from "../../../lib/gabriella/userFingerprint.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -457,11 +458,36 @@ export async function POST(req) {
 
           // Graph ingest — extract entities + typed edges from the
           // exchange into the episodic memory graph. Circuit-broken
-          // fast-tier LLM call; silent on failure.
+          // fast-tier LLM call; silent on failure. Also updates the
+          // longitudinal user fingerprint with graph topics + event
+          // detectors (warmth / pullback / self-question / echo).
           graphIngestTurn(redis, userId, {
             userMsg:   lastUser,
             reply:     finalResponse,
             feltState,
+          }).then(async (ingested) => {
+            // Echoes: send recent Gabriella phrases (3-6 word slices from
+            // last assistant replies in THIS conversation) so the
+            // fingerprint can detect uptake.
+            const lastReplies = messages
+              .filter(m => m.role === "assistant")
+              .map(m => m.content || "")
+              .slice(-4);
+            const phrases = [];
+            for (const rep of lastReplies) {
+              const words = rep.split(/\s+/);
+              for (let i = 0; i + 4 < words.length && phrases.length < 24; i += 3) {
+                phrases.push(words.slice(i, i + 5).join(" "));
+              }
+            }
+            await recordFingerprintTurn(redis, userId, {
+              userMsg:   lastUser,
+              reply:     finalResponse,
+              feltState,
+              graphEntities: ingested?.extractedEntities || [],
+              gabriellaPhrases: phrases,
+            }).catch(() => null);
+            return ingested;
           }).catch(() => null),
 
           // Ensemble judge — three-family scoring of the final response.
