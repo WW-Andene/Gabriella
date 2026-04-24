@@ -412,7 +412,6 @@ export default function Home() {
             <a href="/memory" style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>memory</a>
             <a href="/prefs"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>prefs</a>
             <a href="/stats"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>stats</a>
-            <a href="/admin"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>admin</a>
             <a href="/meet"   style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>about</a>
 
             {/* Privacy mode — turns the current session ephemeral.
