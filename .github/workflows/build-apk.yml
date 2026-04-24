@@ -1,0 +1,196 @@
+name: Build APK
+
+# Builds an Android APK from the deployed PWA using Google's Bubblewrap
+# (Trusted Web Activity tooling). Zero native code — the APK is a thin
+# Android shell that hosts the live gabriella.vercel.app web app with
+# no browser chrome.
+#
+# Triggers:
+#   - Manual dispatch (workflow_dispatch) with an optional host override
+#   - Release: when a GitHub release is published, the built APK is
+#     attached to the release automatically
+#   - Push to main: quick smoke test that the build still works
+#
+# Outputs:
+#   - gabriella-release.apk (unsigned — suitable for sideload and debug)
+#   - Uploaded as a workflow artifact for 30 days
+#   - Attached to the release when the trigger is a release event
+#
+# Signing: the workflow generates an ephemeral debug keystore so the
+# APK is installable via adb / sideload. For Play Store distribution,
+# add a persistent keystore to repo secrets (KEYSTORE_BASE64,
+# KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) and the build will pick
+# them up automatically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "Deployed host (e.g. gabriella.vercel.app)"
+        required: false
+        default: "gabriella.vercel.app"
+      appVersionCode:
+        description: "Android versionCode (integer; must increment per Play release)"
+        required: false
+        default: "1"
+      appVersionName:
+        description: "Android versionName (human-readable, e.g. 0.7.0)"
+        required: false
+        default: "0.7.0"
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - "twa-manifest.json"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write  # needed to attach the APK to a release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-33 build-tools;33.0.2"
+
+      - name: Install Bubblewrap CLI
+        run: npm install -g @bubblewrap/cli@1.22.0
+
+      - name: Resolve build inputs
+        id: inputs
+        run: |
+          HOST="${{ github.event.inputs.host }}"
+          if [ -z "$HOST" ]; then HOST="gabriella.vercel.app"; fi
+          VERSION_CODE="${{ github.event.inputs.appVersionCode }}"
+          if [ -z "$VERSION_CODE" ]; then VERSION_CODE="${GITHUB_RUN_NUMBER}"; fi
+          VERSION_NAME="${{ github.event.inputs.appVersionName }}"
+          if [ -z "$VERSION_NAME" ]; then VERSION_NAME="0.7.0"; fi
+          echo "host=$HOST"                      >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE"       >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME"       >> $GITHUB_OUTPUT
+
+      - name: Rewrite twa-manifest for this run
+        env:
+          HOST:         ${{ steps.inputs.outputs.host }}
+          VERSION_CODE: ${{ steps.inputs.outputs.version_code }}
+          VERSION_NAME: ${{ steps.inputs.outputs.version_name }}
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = "twa-manifest.json";
+          const m = JSON.parse(fs.readFileSync(path, "utf8"));
+          const host = process.env.HOST;
+          m.host                 = host;
+          m.iconUrl              = `https://${host}/icon-512.png`;
+          m.maskableIconUrl      = `https://${host}/icon-512.png`;
+          m.webManifestUrl       = `https://${host}/manifest.webmanifest`;
+          m.fullScopeUrl         = `https://${host}/`;
+          m.appVersionName       = process.env.VERSION_NAME;
+          m.appVersionCode       = parseInt(process.env.VERSION_CODE, 10);
+          fs.writeFileSync(path, JSON.stringify(m, null, 2));
+          console.log("Patched twa-manifest.json for host=" + host);
+          NODE
+
+      - name: Wait for production manifest to be reachable
+        run: |
+          HOST="${{ steps.inputs.outputs.host }}"
+          for i in $(seq 1 10); do
+            if curl -sf "https://${HOST}/manifest.webmanifest" > /dev/null; then
+              echo "Manifest reachable"
+              exit 0
+            fi
+            echo "Attempt $i: manifest not reachable yet; sleeping 6s"
+            sleep 6
+          done
+          echo "Manifest never became reachable at https://${HOST}/manifest.webmanifest" >&2
+          exit 1
+
+      - name: Resolve or generate signing keystore
+        id: signing
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Using keystore from repo secrets"
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android.keystore
+            echo "keystore_password=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
+            echo "key_alias=${{ secrets.KEY_ALIAS }}"                  >> $GITHUB_OUTPUT
+            echo "key_password=${{ secrets.KEY_PASSWORD }}"             >> $GITHUB_OUTPUT
+            echo "signed=true"                                          >> $GITHUB_OUTPUT
+          else
+            echo "No keystore secrets — generating ephemeral debug keystore"
+            keytool -genkeypair \
+              -keystore android.keystore \
+              -alias android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Gabriella, OU=Dev, O=Gabriella, L=Local, S=Local, C=US"
+            echo "keystore_password=android"     >> $GITHUB_OUTPUT
+            echo "key_alias=android"             >> $GITHUB_OUTPUT
+            echo "key_password=android"          >> $GITHUB_OUTPUT
+            echo "signed=false"                  >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bubblewrap init + build
+        env:
+          BW_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.keystore_password }}
+          BW_KEY_PASSWORD:      ${{ steps.signing.outputs.key_password }}
+        run: |
+          mkdir -p twa-build
+          cd twa-build
+          bubblewrap init \
+            --manifest "../twa-manifest.json" \
+            --skipPwaValidation=false
+          echo "--- Generated Android project tree (top-level) ---"
+          ls -la
+          # Copy our keystore into the expected location
+          cp ../android.keystore ./android.keystore
+          # Build
+          bubblewrap build \
+            --skipPwaValidation=false
+
+      - name: Locate and rename APK
+        run: |
+          cd twa-build
+          # Bubblewrap writes app-release-signed.apk (signed path) or
+          # app-release-unsigned.apk (no keystore). Capture whichever.
+          APK_PATH=$(find . -maxdepth 3 -name "*.apk" -print -quit)
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK produced" >&2
+            exit 1
+          fi
+          echo "Produced APK at $APK_PATH"
+          cp "$APK_PATH" ../gabriella-release.apk
+          cd ..
+          ls -lh gabriella-release.apk
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gabriella-apk
+          path: gabriella-release.apk
+          retention-days: 30
+
+      - name: Attach APK to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gabriella-release.apk
