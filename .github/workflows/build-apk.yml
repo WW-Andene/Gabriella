@@ -151,21 +151,36 @@ jobs:
 
       - name: Bubblewrap init + build
         env:
+          HOST:                 ${{ steps.inputs.outputs.host }}
           BW_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.keystore_password }}
           BW_KEY_PASSWORD:      ${{ steps.signing.outputs.key_password }}
+          BW_KEY_ALIAS:         ${{ steps.signing.outputs.key_alias }}
         run: |
+          set -e
           mkdir -p twa-build
           cd twa-build
+          # bubblewrap init's --manifest flag wants a URL to the live
+          # Web App Manifest; it ALWAYS fetches from that URL and
+          # generates a fresh twa-manifest.json + Android project
+          # scaffold. Our committed twa-manifest.json is then copied
+          # over the generated one to preserve custom packageId,
+          # colors, version, and signing config — and `update` is run
+          # to regenerate the Android project against our overrides.
+          # --skipPwaValidation skips the service-worker / icon-size
+          # eligibility checks that often 400 on a Next.js PWA even
+          # when it's fine for a TWA wrapper.
           bubblewrap init \
-            --manifest "../twa-manifest.json" \
-            --skipPwaValidation=false
-          echo "--- Generated Android project tree (top-level) ---"
-          ls -la
+            --manifest "https://${HOST}/manifest.webmanifest" \
+            --skipPwaValidation
+          echo "--- init complete; overriding twa-manifest.json with committed version ---"
+          cp ../twa-manifest.json ./twa-manifest.json
+          bubblewrap update --skipPwaValidation
           # Copy our keystore into the expected location
           cp ../android.keystore ./android.keystore
+          echo "--- Generated Android project tree (top-level) ---"
+          ls -la
           # Build
-          bubblewrap build \
-            --skipPwaValidation=false
+          bubblewrap build --skipPwaValidation
 
       - name: Locate and rename APK
         run: |
