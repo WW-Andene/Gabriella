@@ -26,6 +26,7 @@ import { loadChronology } from "../../../lib/gabriella/chronology.js";
 import { poolStats } from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId } from "../../../lib/gabriella/users.js";
 import { breakerStates } from "../../../lib/gabriella/circuitBreaker.js";
+import { loadAuditStats } from "../../../lib/gabriella/callAudit.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -174,7 +175,11 @@ export async function GET(req) {
     // ─── Circuit breakers ─────────────────────────────────────────────────
     const breakers = await breakerStates(redis, [
       "thinker", "selfProposer", "mirror", "surprise",
+      "constitutional", "planner", "humorLLM", "digest", "retroNarrative",
     ]);
+
+    // ─── LLM call audit — today's rollup + last-hour window ──────────────
+    const callAudit = await loadAuditStats(redis);
 
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
@@ -203,6 +208,7 @@ export async function GET(req) {
       heartbeats:    layerHeartbeats,
       pool,
       breakers,
+      callAudit,
       readiness,
     };
 

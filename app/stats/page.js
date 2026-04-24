@@ -81,7 +81,7 @@ export default function StatsPage() {
   }
   if (!data) return null;
 
-  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, readiness } = data;
+  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, readiness } = data;
 
   return (
     <div style={css.shell}>
@@ -251,6 +251,34 @@ export default function StatsPage() {
             })
           ) : (
             <div style={{fontSize: 13, color: "#8a8a99"}}>all breakers closed</div>
+          )}
+        </div>
+
+        {/* LLM CALL AUDIT */}
+        <div style={css.card}>
+          <div style={css.cardT}>LLM call audit</div>
+          {callAudit ? (
+            <>
+              <div style={css.kv}><span style={css.k}>today ({callAudit.today?.day})</span><span style={css.v}>{callAudit.today?.calls ?? 0} calls · {callAudit.today?.totalTokens ?? 0} tokens</span></div>
+              <div style={css.kv}><span style={css.k}>last hour</span><span style={css.v}>{callAudit.lastHourCalls ?? 0} calls · {callAudit.lastHourTokens ?? 0} tokens</span></div>
+              {callAudit.today?.byProvider && Object.keys(callAudit.today.byProvider).length > 0 && (
+                <div style={{marginTop: 8}}>
+                  {Object.entries(callAudit.today.byProvider).map(([prov, stats]) => (
+                    <div key={prov} style={css.kv}>
+                      <span style={css.k}>{prov}</span>
+                      <span style={css.v}>{stats.calls} calls · {stats.tokens} tok</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {callAudit.lastCall && (
+                <div style={{fontSize: 11, color: "#555566", marginTop: 8}}>
+                  last: {callAudit.lastCall.provider}/{callAudit.lastCall.model} at {relMs(callAudit.lastCall.at)}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{fontSize: 13, color: "#8a8a99"}}>no audit data yet</div>
           )}
         </div>
 
