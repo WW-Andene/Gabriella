@@ -57,6 +57,40 @@ export const runtime     = "nodejs";
 // Small, human-feeling chunks — not pre-token streaming, but the illusion of
 // typing. The vetted response is complete before streaming begins.
 
+// ─── Substance-marker detector — content override for the pragmatic fast-path ─
+// A 5-word turn-2 message can still carry real weight. Pragmatics scores
+// by accumulated substrate, which is sparse early; markers of substance
+// let a short message break through that gate and reach the cores.
+//
+// Conservative by design: only fires on clear signals. If in doubt,
+// the fast-path still wins — we'd rather take a light path on an
+// ambiguous heavy moment than force depth on a truly phatic one.
+const SUBSTANCE_MARKERS = [
+  // Questions about self / inner life / meaning — short but heavy
+  /\b(do you|have you|are you|can you|could you|would you)\s+(ever|still|really|actually|genuinely|honestly)\b/i,
+  /\b(do|have|are|can|could|would)\s+(you\s+)?ever\s+(feel|felt|think|thought|wonder|wondered|miss|missed|regret|love|hate|want)\b/i,
+  /\bwhat\s+(makes|made|does it|is it like|do you)\b/i,
+  /\bwhy\s+(do|did|does|does it|are you|do you)\b/i,
+  // Emotional vocabulary — if they name a feeling, it's not small talk
+  /\b(lonely|alone|scared|afraid|tired|exhausted|broken|hurt|hurting|grief|grieving|lost|trapped|stuck|dying|suicidal|empty|numb|ashamed|regret|sorry|miss|missing|longing|yearning)\b/i,
+  // Personal revelation framing
+  /\b(i just|i've been|i can't|i don't know|i'm not sure|i keep|i wish|i need|i feel like|it feels like|i feel|i felt)\b/i,
+  // Meta-relational openers — "can I ask you something" / "something I've been thinking"
+  /\b(can i ask|something i've been|something i want|something i need|i want to tell|i have to tell|i need to tell)\b/i,
+  // Heavy topics by keyword
+  /\b(death|dying|loss|grief|mortality|meaning|purpose|existence|god|love|trust|betrayal|abuse|trauma|therapy)\b/i,
+];
+
+function detectSubstanceMarkers(text) {
+  if (!text || typeof text !== "string") return false;
+  const trimmed = text.trim();
+  // Very short messages (1-2 words) are almost always phatic unless they're a
+  // heavy standalone question. "what?" "why?" are context-dependent; let the
+  // fast-path handle those — they're correct as light.
+  if (trimmed.length < 8) return false;
+  return SUBSTANCE_MARKERS.some(rx => rx.test(trimmed));
+}
+
 function streamString(text, controller, encoder, perCharMs = { min: 4, max: 12 }) {
   return new Promise((resolve) => {
     let i = 0;
@@ -129,10 +163,22 @@ export async function POST(req) {
     //     mood, memory, chronology, and register are preserved). It
     //     just skips the interpretive pipeline that was producing
     //     unjustified intensity.
+    //
+    //     Content override: a short message on sparse context can still
+    //     carry real substance — "do you ever feel trapped?" on turn 2
+    //     is 5 words but isn't small talk. If the message contains
+    //     markers of substance (questions about self/feeling/meaning,
+    //     emotional vocabulary, or explicit vulnerability), refuse the
+    //     fast-path even at low pragmatic weight. The cores get to see
+    //     moments the classifier can't score yet.
+    const lastUserMessageText = recentMessages[recentMessages.length - 1]?.content || "";
+    const hasSubstanceMarkers = detectSubstanceMarkers(lastUserMessageText);
+
     const fastPathEligible =
       pragmatics &&
       (pragmatics.act === "phatic" || (pragmatics.act === "casual" && pragmatics.weight < 0.22)) &&
-      pragmatics.weight < 0.25;
+      pragmatics.weight < 0.25 &&
+      !hasSubstanceMarkers;
 
     if (fastPathEligible) {
       const fastResponse = await generateFastPath({
