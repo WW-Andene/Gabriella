@@ -51,6 +51,7 @@ import { ingestTurn as graphIngestTurn }                   from "../../../lib/ga
 import { recordFingerprintTurn }                           from "../../../lib/gabriella/userFingerprint.js";
 import { tagResponse, scoreOutcome, recordStyleOutcome }   from "../../../lib/gabriella/learningLoop.js";
 import { tick as tickRelTime, computeTickMultiplier }      from "../../../lib/gabriella/relationalTime.js";
+import { recordPosition }                                  from "../../../lib/gabriella/dialectical.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -537,6 +538,16 @@ export async function POST(req) {
             isWarmth:       /\b(thank|appreciate|love this|love that|needed|grateful)\b/i.test(lastUser || ""),
             isSelfQuestion: /\?/.test(lastUser || "") && /\b(do|have|are|can|would)\s+you\b/i.test(lastUser || ""),
             isPullback:     (lastUser || "").trim().length <= 12 && /^(ok|k|fine|whatever|idk)\.?$/i.test((lastUser || "").trim()),
+          }).catch(() => null),
+
+          // Dialectical position log — the heuristic detector pulls
+          // any first-person stance clause ('I don't X', 'I tend to
+          // Y', 'my view is Z') from the reply and appends it to the
+          // user's position history. Weekly /api/dialectical?run=1
+          // audits these for contradictions over time.
+          recordPosition(redis, userId, {
+            text:  finalResponse,
+            topic: null,   // enriched by audit at read time
           }).catch(() => null),
 
           ...(finalGauntlet.failures || []).map(f => {

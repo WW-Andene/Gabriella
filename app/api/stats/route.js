@@ -32,6 +32,7 @@ import { graphStats } from "../../../lib/gabriella/graph.js";
 import { blindEvalStats } from "../../../lib/gabriella/blindEval.js";
 import { skipListStats }  from "../../../lib/gabriella/deadBlockPrune.js";
 import { relTimeStats }   from "../../../lib/gabriella/relationalTime.js";
+import { dialecticalStats } from "../../../lib/gabriella/dialectical.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -283,6 +284,11 @@ export async function GET(req) {
     try { relTime = await relTimeStats(redis, userId); }
     catch { /* ignore */ }
 
+    // ─── Dialectical — position contradictions over time ──────────────────
+    let dialectical = null;
+    try { dialectical = await dialecticalStats(redis, userId); }
+    catch { /* ignore */ }
+
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
     // loaded? A deploy without keys will have gaping holes here.
@@ -317,6 +323,7 @@ export async function GET(req) {
       blindEval,
       skipList,
       relTime,
+      dialectical,
       gauntlet: gauntletStats,
       readiness,
     };
