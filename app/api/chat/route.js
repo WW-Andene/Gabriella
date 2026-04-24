@@ -46,6 +46,7 @@ import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/g
 import { computeCadence, sleep }                            from "../../../lib/gabriella/cadence.js";
 import { premiumModel }                                     from "../../../lib/gabriella/models.js";
 import { runTurn }                                          from "../../../lib/gabriella/turn.js";
+import { speculativeOpener, warmPrefix }                    from "../../../lib/gabriella/ttft.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -263,11 +264,27 @@ export async function POST(req) {
       });
     }
 
-    // 3. Per-turn pipeline — extracted into runTurn() so route.js stays
-    //    an HTTP boundary and the cognition + speak + gauntlet sequence
-    //    can be iterated on without touching transport. Priors (person
-    //    + narrative) flow into the cores as continuity signals.
-    const turnResult = await runTurn({
+    // 3. Per-turn pipeline — kicked off in PARALLEL with a speculative
+    //    opener so the ReadableStream can emit a __BRIDGE__ sidecar
+    //    within ~500ms (presence signal) while the heavy triple-core +
+    //    gauntlet + speaker flow still assembles the real reply.
+    //
+    //    Priors (person + narrative) flow into the cores as continuity
+    //    signals. The opener is capped at 10 words, fast-tier, circuit-
+    //    broken — on failure the UX degrades to the original un-bridged
+    //    path with no user-visible impact.
+    const openerPromise = speculativeOpener({
+      redis, userId,
+      messages: recentMessages,
+      mood:     currentMood,
+      timeoutMs: 850,
+    }).catch(() => null);
+
+    // Warm provider-side prefix cache for the heavy call's system
+    // prompt. Fire-and-forget, circuit-broken, doesn't block anything.
+    warmPrefix({ redis, systemPrompt }).catch(() => null);
+
+    const turnPromise = runTurn({
       // buildGabriella output
       messages, recentMessages, memory, currentMood,
       withheldCandidate, debtCall, activeAgenda, activeThreshold,
@@ -281,18 +298,48 @@ export async function POST(req) {
       redis, userId,
     });
 
-    const {
-      finalResponse, fragments, pauses, cadence,
-      feltState, innerThought, finalUncertain, finalGauntlet,
-      retried, rejectedCandidate, rejectedReasons,
-      consensus, alpha: alphaResult, beta: betaResult, gamma: gammaResult,
-      turnKnobs, substrateDelta,
-      toolResult,
-    } = turnResult;
-
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
+        // BRIDGE sidecar — shipped ASAP (races opener against a 900ms
+        // ceiling so a slow opener never blocks the real reply). Gives
+        // the client a "she's here and reading" signal within sub-
+        // second while the heavy pipeline is still running.
+        try {
+          const bridge = await Promise.race([
+            openerPromise,
+            new Promise(r => setTimeout(() => r(null), 900)),
+          ]);
+          if (bridge) {
+            controller.enqueue(encoder.encode(
+              `__BRIDGE__${JSON.stringify({ text: bridge, at: Date.now() })}`,
+            ));
+          }
+        } catch { /* bridge is optional; never block streaming */ }
+
+        // Now wait for the real pipeline. If it crashes, stream a
+        // terse fallback rather than tearing down the connection —
+        // the client already got the bridge and expects prose.
+        let turnResult;
+        try {
+          turnResult = await turnPromise;
+        } catch (err) {
+          logError("chat", "runTurn failed inside stream", err).catch(() => {});
+          const fallback = "Something jammed for a second. One sec.";
+          await streamString(fallback, controller, encoder, { min: 4, max: 12 });
+          controller.close();
+          return;
+        }
+
+        const {
+          finalResponse, fragments, pauses, cadence,
+          feltState, innerThought, finalUncertain, finalGauntlet,
+          retried, rejectedCandidate, rejectedReasons,
+          consensus, alpha: alphaResult, beta: betaResult, gamma: gammaResult,
+          turnKnobs, substrateDelta,
+          toolResult,
+        } = turnResult;
+
         // PEEK sidecar — emitted BEFORE the pre-stream delay so the
         // client can render "what she's about to do" during the typing-
         // dots phase. Glass-mind mode: the user sees her plan while she's
