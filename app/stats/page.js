@@ -81,7 +81,7 @@ export default function StatsPage() {
   }
   if (!data) return null;
 
-  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, promptAudit, gauntlet, readiness } = data;
+  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, promptAudit, blocksAudit, gauntlet, readiness } = data;
 
   return (
     <div style={css.shell}>
@@ -283,6 +283,37 @@ export default function StatsPage() {
             </>
           ) : (
             <div style={{fontSize: 13, color: "#8a8a99"}}>not enough samples yet (min 3)</div>
+          )}
+        </div>
+
+        {/* PROMPT-BLOCK POPULATION */}
+        <div style={css.card}>
+          <div style={css.cardT}>Prompt-block population ({blocksAudit?.turns ?? 0} turns today)</div>
+          {blocksAudit ? (
+            <>
+              {blocksAudit.deadBlocks?.length > 0 && (
+                <div style={{marginBottom: 10, padding: "8px 10px", background: "#2a1a1a", border: "1px solid #6a2a2a", borderRadius: 6, fontSize: 12, color: "#ffc4c4"}}>
+                  <strong>dead blocks</strong> (fill rate {"<"} 5%, empty {">"}= 5 turns): {blocksAudit.deadBlocks.join(", ")}
+                  <div style={{marginTop: 4, opacity: 0.8}}>candidates for pruning</div>
+                </div>
+              )}
+              <div style={{fontSize: 10, letterSpacing: 0.8, color: "#8a8a99", textTransform: "uppercase", marginBottom: 4}}>by block — fill rate</div>
+              {Object.entries(blocksAudit.byBlock || {})
+                .sort((a, b) => b[1].fillRate - a[1].fillRate)
+                .map(([name, stats]) => (
+                  <div key={name} style={css.kv}>
+                    <span style={css.k}>{name}</span>
+                    <span style={css.v}>
+                      {Math.round(stats.fillRate * 100)}%
+                      <span style={{marginLeft: 6, color: "#555566", fontSize: 11}}>
+                        ({stats.populated}/{stats.populated + stats.empty})
+                      </span>
+                    </span>
+                  </div>
+                ))}
+            </>
+          ) : (
+            <div style={{fontSize: 13, color: "#8a8a99"}}>not enough samples yet</div>
           )}
         </div>
 

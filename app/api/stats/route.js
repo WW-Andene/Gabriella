@@ -223,6 +223,42 @@ export async function GET(req) {
     // ─── Gauntlet stats — per-check rejection distribution ──────────────
     const gauntletStats = await loadMetaRegister(redis, userId).catch(() => null);
 
+    // ─── Block population — which prompt slots are doing work ───────────
+    const blockDay = new Date().toISOString().slice(0, 10);
+    const blocksRaw = await getKeySafe(`${userId}:blocks:${blockDay}`);
+    let blocksAudit = null;
+    if (blocksRaw) {
+      try {
+        const parsed = typeof blocksRaw === "string" ? JSON.parse(blocksRaw) : blocksRaw;
+        if (parsed && parsed.turns) {
+          // Compute fill-rate per slot
+          const slots = new Set([
+            ...Object.keys(parsed.populated || {}),
+            ...Object.keys(parsed.empty || {}),
+          ]);
+          const byBlock = {};
+          for (const slot of slots) {
+            const pop = parsed.populated?.[slot] || 0;
+            const emp = parsed.empty?.[slot] || 0;
+            const total = pop + emp;
+            byBlock[slot] = {
+              populated: pop,
+              empty:     emp,
+              fillRate:  total > 0 ? +(pop / total).toFixed(2) : 0,
+            };
+          }
+          blocksAudit = {
+            day:      parsed.day,
+            turns:    parsed.turns,
+            byBlock,
+            deadBlocks: Object.entries(byBlock)
+              .filter(([, s]) => s.fillRate < 0.05 && s.empty >= 5)
+              .map(([name]) => name),
+          };
+        }
+      } catch { /* ignore */ }
+    }
+
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
     // loaded? A deploy without keys will have gaping holes here.
@@ -252,6 +288,7 @@ export async function GET(req) {
       breakers,
       callAudit,
       promptAudit,
+      blocksAudit,
       gauntlet: gauntletStats,
       readiness,
     };
