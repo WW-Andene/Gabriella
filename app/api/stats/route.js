@@ -31,6 +31,7 @@ import { loadMetaRegister } from "../../../lib/gabriella/metaregister.js";
 import { graphStats } from "../../../lib/gabriella/graph.js";
 import { blindEvalStats } from "../../../lib/gabriella/blindEval.js";
 import { skipListStats }  from "../../../lib/gabriella/deadBlockPrune.js";
+import { relTimeStats }   from "../../../lib/gabriella/relationalTime.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -277,6 +278,11 @@ export async function GET(req) {
     try { skipList = await skipListStats(redis, userId); }
     catch { /* ignore */ }
 
+    // ─── Relational time — engagement-weighted per-user clock ─────────────
+    let relTime = null;
+    try { relTime = await relTimeStats(redis, userId); }
+    catch { /* ignore */ }
+
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
     // loaded? A deploy without keys will have gaping holes here.
@@ -310,6 +316,7 @@ export async function GET(req) {
       graph,
       blindEval,
       skipList,
+      relTime,
       gauntlet: gauntletStats,
       readiness,
     };

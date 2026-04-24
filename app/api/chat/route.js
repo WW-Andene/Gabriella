@@ -50,6 +50,7 @@ import { speculativeOpener, warmPrefix }                    from "../../../lib/g
 import { ingestTurn as graphIngestTurn }                   from "../../../lib/gabriella/graph.js";
 import { recordFingerprintTurn }                           from "../../../lib/gabriella/userFingerprint.js";
 import { tagResponse, scoreOutcome, recordStyleOutcome }   from "../../../lib/gabriella/learningLoop.js";
+import { tick as tickRelTime, computeTickMultiplier }      from "../../../lib/gabriella/relationalTime.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -522,6 +523,20 @@ export async function POST(req) {
               retried:         !!retried,
               rejectedBecause: rejectedReasons || null,
             }),
+          }).catch(() => null),
+
+          // Relational-time tick — advances the per-user engagement
+          // clock. Heavier moments tick faster; shallow exchanges
+          // slower. All downstream decay curves (memory salience,
+          // interest EMA, style EMA) will read this clock instead of
+          // wall-time going forward.
+          tickRelTime(redis, userId, {
+            pragmatics,
+            feltState,
+            userMsg:        lastUser,
+            isWarmth:       /\b(thank|appreciate|love this|love that|needed|grateful)\b/i.test(lastUser || ""),
+            isSelfQuestion: /\?/.test(lastUser || "") && /\b(do|have|are|can|would)\s+you\b/i.test(lastUser || ""),
+            isPullback:     (lastUser || "").trim().length <= 12 && /^(ok|k|fine|whatever|idk)\.?$/i.test((lastUser || "").trim()),
           }).catch(() => null),
 
           ...(finalGauntlet.failures || []).map(f => {
