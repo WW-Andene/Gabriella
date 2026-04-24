@@ -29,6 +29,7 @@ import { breakerStates } from "../../../lib/gabriella/circuitBreaker.js";
 import { loadAuditStats } from "../../../lib/gabriella/callAudit.js";
 import { loadMetaRegister } from "../../../lib/gabriella/metaregister.js";
 import { graphStats } from "../../../lib/gabriella/graph.js";
+import { blindEvalStats } from "../../../lib/gabriella/blindEval.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -265,6 +266,11 @@ export async function GET(req) {
     try { graph = await graphStats(redis, userId); }
     catch { /* ignore */ }
 
+    // ─── Blind human A/B eval — win rate + Wilson CI ─────────────────────
+    let blindEval = null;
+    try { blindEval = await blindEvalStats(redis); }
+    catch { /* ignore */ }
+
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
     // loaded? A deploy without keys will have gaping holes here.
@@ -296,6 +302,7 @@ export async function GET(req) {
       promptAudit,
       blocksAudit,
       graph,
+      blindEval,
       gauntlet: gauntletStats,
       readiness,
     };
