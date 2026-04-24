@@ -51,7 +51,14 @@ export default function DevPage() {
   const [booted, setBooted]   = useState(false);
   const [status, setStatus]   = useState(null);
   const [logs,   setLogs]     = useState(null);
-  const [tab,    setTab]      = useState("dashboard"); // "dashboard" | "logs"
+  const [tab,    setTab]      = useState("dashboard"); // "dashboard" | "logs" | "deploy"
+  // Deploy tab state
+  const [statsData,   setStatsData]  = useState(null);
+  const [benchOut,    setBenchOut]   = useState(null);
+  const [seedOut,     setSeedOut]    = useState(null);
+  const [skipOut,     setSkipOut]    = useState(null);
+  const [auditOut,    setAuditOut]   = useState(null);
+  const [deployBusy,  setDeployBusy] = useState(null);
   const [error,  setError]    = useState(null);
   const [notice, setNotice]   = useState(null);
   const [busy,   setBusy]     = useState(false);
@@ -316,6 +323,18 @@ export default function DevPage() {
               marginBottom: -1,
             }}
           >Debug logs{logs?.byLevel?.error ? ` (${logs.byLevel.error})` : ""}</button>
+          <button
+            onClick={async () => {
+              setTab("deploy");
+              try { const r = await fetch("/api/stats"); if (r.ok) setStatsData(await r.json()); } catch {}
+            }}
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              padding: "8px 12px", fontSize: 13, color: tab === "deploy" ? "#fff" : "#8a8a99",
+              borderBottom: tab === "deploy" ? "2px solid #4a6aff" : "2px solid transparent",
+              marginBottom: -1,
+            }}
+          >Deploy & validate</button>
         </div>
 
         {error  && <div style={css.error}>{error}</div>}
@@ -336,6 +355,21 @@ export default function DevPage() {
               await doAction("/api/debug/logs", { method: "POST", successMsg: "Test entry written." });
               refreshLogs();
             }}
+          />
+        )}
+
+        {tab === "deploy" && (
+          <DeployTab
+            css={css}
+            token={secret}
+            stats={statsData}
+            refreshStats={async () => { try { const r = await fetch("/api/stats"); if (r.ok) setStatsData(await r.json()); } catch {} }}
+            busy={deployBusy}
+            setBusy={setDeployBusy}
+            benchOut={benchOut}   setBenchOut={setBenchOut}
+            seedOut={seedOut}     setSeedOut={setSeedOut}
+            skipOut={skipOut}     setSkipOut={setSkipOut}
+            auditOut={auditOut}   setAuditOut={setAuditOut}
           />
         )}
 
@@ -815,6 +849,156 @@ function ConfigEditor({ cfg, sources, busy, onSave, onReset }) {
         >
           Reset all to defaults
         </button>
+      </div>
+    </>
+  );
+}
+
+// ─── Deploy & validate tab ────────────────────────────────────────────────────
+//
+// Consolidates post-deploy ops into a single panel inside /dev so there's
+// one canonical admin surface. Everything here was previously reachable only
+// via curl or the short-lived standalone /admin page; now it's a tab.
+
+function DeployTab({
+  css, token, stats, refreshStats, busy, setBusy,
+  benchOut, setBenchOut, seedOut, setSeedOut,
+  skipOut, setSkipOut, auditOut, setAuditOut,
+}) {
+  const GITHUB_REPO = "WW-Andene/Gabriella";
+  const readiness = stats?.readiness || {};
+  const dot = (ok) => ({ display: "inline-block", width: 8, height: 8, borderRadius: 4, marginRight: 6, background: ok ? "#4ade80" : "#f87171", verticalAlign: "middle" });
+
+  const runPost = async (name, path, setter) => {
+    setBusy(name);
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const r = await fetch(path, { method: "POST", headers });
+      const j = await r.json().catch(() => ({ ok: false, error: "bad json" }));
+      setter(j);
+      refreshStats();
+    } catch (e) {
+      setter({ ok: false, error: e?.message || String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runGet = async (name, path, setter) => {
+    setBusy(name);
+    try {
+      const r = await fetch(path);
+      const j = await r.json().catch(() => ({ ok: false, error: "bad json" }));
+      setter(j);
+      refreshStats();
+    } catch (e) {
+      setter({ ok: false, error: e?.message || String(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <div style={css.card}>
+        <div style={css.cardTitle}>Deploy health</div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>upstash redis</span>     <span style={css.kvVal}><span style={dot(readiness.upstashConfigured)} />{readiness.upstashConfigured ? "configured" : "missing"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>upstash vector</span>    <span style={css.kvVal}><span style={dot(readiness.upstashVectorConfigured)} />{readiness.upstashVectorConfigured ? "configured" : "missing"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>groq keys</span>         <span style={css.kvVal}><span style={dot(readiness.groqConfigured)} />{readiness.groqConfigured ? "live" : "none"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>cerebras keys</span>     <span style={css.kvVal}><span style={dot(readiness.cerebrasConfigured)} />{readiness.cerebrasConfigured ? "live" : "none"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>gemini keys</span>       <span style={css.kvVal}><span style={dot(readiness.geminiConfigured)} />{readiness.geminiConfigured ? "live" : "none"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>fireworks</span>         <span style={css.kvVal}><span style={dot(readiness.fireworksConfigured)} />{readiness.fireworksConfigured ? "configured" : "off"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>cron secret</span>       <span style={css.kvVal}><span style={dot(readiness.cronSecretSet)} />{readiness.cronSecretSet ? "set" : "unset"}</span></div>
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Integration bench (6 scenarios)</div>
+        <div style={css.subtitle}>Exercises turnShape routing, rollout, gauntlet modes, bridge. Privacy-mode, ~30–60s.</div>
+        <div style={css.btnRow}>
+          <button style={busy === "bench" ? { ...css.btn, opacity: 0.6, cursor: "wait" } : css.btnP}
+            disabled={!!busy}
+            onClick={() => runPost("bench", "/api/admin/bench", setBenchOut)}>
+            {busy === "bench" ? "running…" : "Run bench"}
+          </button>
+        </div>
+        {benchOut && <pre style={css.code}>{JSON.stringify(benchOut.summary || benchOut, null, 2)}</pre>}
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Seed blind-eval from live bench</div>
+        <div style={css.subtitle}>Runs the bench then submits each (gabriella, baseline) pair to /api/blind-eval.</div>
+        <div style={css.btnRow}>
+          <button style={busy === "seed" ? { ...css.btn, opacity: 0.6, cursor: "wait" } : css.btn}
+            disabled={!!busy}
+            onClick={() => runPost("seed", "/api/admin/seed-blind", setSeedOut)}>
+            {busy === "seed" ? "running…" : "Seed blind-eval"}
+          </button>
+          <a style={{ ...css.btn, textDecoration: "none", display: "inline-block" }} href="/blind-eval">Open /blind-eval →</a>
+        </div>
+        {seedOut && <pre style={css.code}>{JSON.stringify(seedOut.seeded ? { seeded: seedOut.seeded.length, ok: seedOut.seeded.filter(x => x.ok).length } : seedOut, null, 2)}</pre>}
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Blind A/B — human preference</div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>votes</span>        <span style={css.kvVal}>{stats?.blindEval?.totalVotes ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>gabriella wins</span><span style={css.kvVal}>{stats?.blindEval ? `${stats.blindEval.gabWins} / ${stats.blindEval.gabWins + stats.blindEval.gabLoss}` : "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>win rate</span>     <span style={css.kvVal}>{stats?.blindEval?.winRate != null ? `${Math.round(stats.blindEval.winRate * 100)}%` : "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>95% CI</span>       <span style={css.kvVal}>{stats?.blindEval?.ci ? `[${Math.round(stats.blindEval.ci.low * 100)}%, ${Math.round(stats.blindEval.ci.high * 100)}%]` : "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>actually better?</span>
+          <span style={css.kvVal}>{stats?.blindEval?.actuallyBetter ? <><span style={dot(true)} />yes (CI lower {'>'} 0.5)</> : "not yet"}</span></div>
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Dead-block skip list</div>
+        <div style={css.subtitle}>Forces recompute of the empirical prompt-slot skip set (Step TT). Auto-refreshes every 24h otherwise.</div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>skip size</span>     <span style={css.kvVal}>{stats?.skipList?.skipSet?.length ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>turns observed</span><span style={css.kvVal}>{stats?.skipList?.turnsObserved ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>last compute</span>  <span style={css.kvVal}>{stats?.skipList?.ageHours != null ? `${stats.skipList.ageHours}h ago` : "never"}</span></div>
+        <div style={css.btnRow}>
+          <button style={busy === "skip" ? { ...css.btn, opacity: 0.6, cursor: "wait" } : css.btn}
+            disabled={!!busy}
+            onClick={() => runPost("skip", "/api/admin/recompute-skiplist", setSkipOut)}>
+            {busy === "skip" ? "recomputing…" : "Recompute now"}
+          </button>
+        </div>
+        {skipOut && <pre style={css.code}>{JSON.stringify(skipOut.payload || skipOut, null, 2)}</pre>}
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Dialectical audit</div>
+        <div style={css.subtitle}>Scan her position log for contradictions over time (Step XX). Surfaces tensions into the next turn's stream.</div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>positions logged</span><span style={css.kvVal}>{stats?.dialectical?.positions ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>tensions held</span>  <span style={css.kvVal}>{stats?.dialectical?.tensions ?? "—"}</span></div>
+        <div style={css.btnRow}>
+          <button style={busy === "audit" ? { ...css.btn, opacity: 0.6, cursor: "wait" } : css.btn}
+            disabled={!!busy}
+            onClick={() => runGet("audit", "/api/dialectical?run=1", setAuditOut)}>
+            {busy === "audit" ? "auditing…" : "Run audit"}
+          </button>
+        </div>
+        {auditOut && <pre style={css.code}>{JSON.stringify(auditOut.result || auditOut, null, 2)}</pre>}
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Android APK build</div>
+        <div style={css.subtitle}>Bubblewrap TWA pipeline (Step SS). Runs on GitHub Actions — not locally runnable.</div>
+        <div style={css.btnRow}>
+          <a style={{ ...css.btn, textDecoration: "none", display: "inline-block" }} target="_blank" rel="noreferrer" href={`https://github.com/${GITHUB_REPO}/actions/workflows/build-apk.yml`}>Open Actions →</a>
+          <a style={{ ...css.btn, textDecoration: "none", display: "inline-block" }} href="/manifest.webmanifest" target="_blank" rel="noreferrer">View manifest</a>
+          <a style={{ ...css.btn, textDecoration: "none", display: "inline-block" }} href="/icon-512.png" target="_blank" rel="noreferrer">View icon</a>
+        </div>
+      </div>
+
+      <div style={css.card}>
+        <div style={css.cardTitle}>Live telemetry</div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>prompt chars (avg)</span><span style={css.kvVal}>{stats?.promptAudit?.avgChars ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>wave A p95</span>        <span style={css.kvVal}>{stats?.promptAudit?.phaseTimings?.waveA?.p95 ?? "—"} ms</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>wave B p95</span>        <span style={css.kvVal}>{stats?.promptAudit?.phaseTimings?.waveB?.p95 ?? "—"} ms</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>gauntlet pass rate</span><span style={css.kvVal}>{stats?.gauntlet?.passRate != null ? `${Math.round(stats.gauntlet.passRate * 100)}%` : "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>graph nodes</span>       <span style={css.kvVal}>{stats?.graph?.nodes ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>graph edges</span>       <span style={css.kvVal}>{stats?.graph?.edges ?? "—"}</span></div>
+        <div style={{ ...css.kv }}><span style={css.kvKey}>rel-time mult avg</span> <span style={css.kvVal}>{stats?.relTime?.avgMultiplier ?? "—"}×</span></div>
       </div>
     </>
   );
