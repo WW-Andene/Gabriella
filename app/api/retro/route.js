@@ -31,6 +31,7 @@ import { loadLedger } from "../../../lib/gabriella/callbacks.js";
 import { loadPlan } from "../../../lib/gabriella/planner.js";
 import { resolveUserId } from "../../../lib/gabriella/users.js";
 import { recentFeltStates } from "../../../lib/gabriella/episodic.js";
+import { loadMilestones, formatMilestones } from "../../../lib/gabriella/milestones.js";
 import { withKeyRotation } from "../../../lib/gabriella/groqPool.js";
 import { fastModel } from "../../../lib/gabriella/models.js";
 import { withBreaker } from "../../../lib/gabriella/circuitBreaker.js";
@@ -198,14 +199,16 @@ export async function GET(req) {
   const userId = resolveUserId(req);
 
   try {
-    const [self, stream, chronology, callbacks, plan, recentFs] = await Promise.all([
+    const [self, stream, chronology, callbacks, plan, recentFs, rawMilestones] = await Promise.all([
       loadSelf(redis, userId),
       readStream(redis, userId, { limit: 15 }).catch(() => []),
       loadChronology(redis, userId).catch(() => null),
       loadLedger(redis, userId).catch(() => ({ landed: 0, missed: 0, total: 0 })),
       loadPlan(redis, userId).catch(() => null),
       recentFeltStates(redis, userId, 30).catch(() => []),
+      loadMilestones(redis, userId).catch(() => []),
     ]);
+    const milestones = formatMilestones(rawMilestones || []);
 
     const rate = callbacks.total > 0
       ? +(callbacks.landed / callbacks.total).toFixed(2)
@@ -327,6 +330,8 @@ export async function GET(req) {
           .sort((a, b) => a.at - b.at)
           .slice(-20);  // keep most recent 20 for chart density
       })(),
+
+      milestones,
 
       chronology: chronology ? {
         totalTurns:     chronology.totalTurns || 0,

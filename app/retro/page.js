@@ -187,7 +187,7 @@ export default function RetroPage() {
   if (error) return <div style={css.shell}><div style={css.wrap}><div style={css.error}>{error}</div></div></div>;
   if (!data) return null;
 
-  const { summary, read, wants, commitments, retired, stream, plan, callbacks, chronology, arc, selfEvents } = data;
+  const { summary, read, wants, commitments, retired, stream, plan, callbacks, chronology, arc, selfEvents, milestones } = data;
   const hasAny = summary || read || (wants || []).length || (commitments || []).length;
 
   return (
@@ -264,6 +264,23 @@ export default function RetroPage() {
                   <div style={css.wantMeta}>
                     {c.confirmations} confirmation{c.confirmations !== 1 ? "s" : ""} · {c.refutations} refutation{c.refutations !== 1 ? "s" : ""}
                     {c.status === "confirmed" && <span style={{ marginLeft: 6, color: "#4ade80" }}>· confirmed</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {milestones && milestones.length > 0 && (
+          <>
+            <h2 style={css.h2}>Milestones</h2>
+            <div style={css.card}>
+              {milestones.map((m, i) => (
+                <div key={i} style={{ padding: "6px 0", borderBottom: i < milestones.length - 1 ? "1px dashed #22222e" : "none", fontSize: 13 }}>
+                  <div style={{ color: "#ffd6b0", fontWeight: 500 }}>{m.label}</div>
+                  {m.detail && <div style={{ fontSize: 12, color: "#cfcfd8", marginTop: 2 }}>{m.detail}</div>}
+                  <div style={{ fontSize: 11, color: "#555566", marginTop: 2 }}>
+                    {new Date(m.at).toISOString().slice(0, 10)}
                   </div>
                 </div>
               ))}
