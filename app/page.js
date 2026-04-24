@@ -64,13 +64,13 @@ function splitIntoFragments(text) {
 // all of them off cleanly so the rendered bubbles only contain natural
 // prose, and surface the structured data for UI panels.
 const SEP = "\u001F";
-const SIDECARS = ["__TOOL__", "__THINK__", "__FELT__", "__PEEK__"];
+const SIDECARS = ["__TOOL__", "__THINK__", "__FELT__", "__PEEK__", "__BRIDGE__"];
 
 function extractSidecars(streamText) {
   // Single pass: find each leading SEP, read marker + payload up to the
   // closing SEP, strip it, continue. Unknown markers preserved in text.
   let text = streamText;
-  const found = { tool: null, think: null, felt: null, peek: null };
+  const found = { tool: null, think: null, felt: null, peek: null, bridge: null };
   let idx = text.indexOf(SEP);
   while (idx !== -1) {
     let marker = null;
@@ -84,10 +84,11 @@ function extractSidecars(streamText) {
     const payload = text.slice(payloadStart, endIdx);
     try {
       const parsed = JSON.parse(payload);
-      if (marker === "__TOOL__")  found.tool  = parsed;
-      if (marker === "__THINK__") found.think = parsed;
-      if (marker === "__FELT__")  found.felt  = parsed;
-      if (marker === "__PEEK__")  found.peek  = parsed;
+      if (marker === "__TOOL__")   found.tool   = parsed;
+      if (marker === "__THINK__")  found.think  = parsed;
+      if (marker === "__FELT__")   found.felt   = parsed;
+      if (marker === "__PEEK__")   found.peek   = parsed;
+      if (marker === "__BRIDGE__") found.bridge = parsed;
     } catch { /* malformed — skip */ }
     text = text.slice(0, idx) + text.slice(endIdx + SEP.length);
     idx = text.indexOf(SEP);
@@ -164,6 +165,11 @@ export default function Home() {
   // dots are still animating. Cleared when the response finalizes so
   // the static innerThought panel takes over.
   const [peek, setPeek] = useState(null);
+  // Bridge — fast-tier opener that arrives within sub-second while the
+  // heavy pipeline is still running. Rendered as a subtle presence
+  // indicator ("reading that..." or whatever the opener returns) next
+  // to the typing dots. Cleared as soon as the real bubbles stream in.
+  const [bridge, setBridge] = useState(null);
   // Privacy mode — ephemeral session toggle. When on, request body
   // includes { privacy: true } and server short-circuits all Redis
   // persistence (memory, stream, self, episode, etc.).
@@ -195,19 +201,36 @@ export default function Home() {
   // Derived: assistant bubbles for the CURRENT streaming turn (if any).
   // Strip all sidecars. Also surface the peek sidecar live — it arrives
   // before the response does, so we capture it while streaming.
-  const { streamingBubbles, livePeek } = useMemo(() => {
-    if (!streaming) return { streamingBubbles: [], livePeek: null };
+  const { streamingBubbles, livePeek, liveBridge } = useMemo(() => {
+    if (!streaming) return { streamingBubbles: [], livePeek: null, liveBridge: null };
     const parsed = extractSidecars(streaming);
     return {
       streamingBubbles: splitIntoFragments(parsed.text),
-      livePeek:         parsed.peek || null,
+      livePeek:         parsed.peek   || null,
+      liveBridge:       parsed.bridge || null,
     };
   }, [streaming]);
 
-  // Keep peek state in sync with what's arriving during the stream.
+  // Keep peek + bridge state in sync with what's arriving during the stream.
   useEffect(() => {
-    if (livePeek) setPeek(livePeek);
+    if (livePeek)   setPeek(livePeek);
   }, [livePeek]);
+  useEffect(() => {
+    if (liveBridge) setBridge(liveBridge);
+  }, [liveBridge]);
+
+  // Clear the bridge once actual prose has started to render — the
+  // real reply takes over and the presence signal is no longer needed.
+  useEffect(() => {
+    if (streamingBubbles.some(b => b && b.trim().length > 0)) {
+      setBridge(null);
+    }
+  }, [streamingBubbles]);
+
+  // Clear bridge entirely when a turn fully finishes.
+  useEffect(() => {
+    if (!streaming && !loading) setBridge(null);
+  }, [streaming, loading]);
 
   const send = async () => {
     if (!input.trim() || loading) return;
@@ -375,7 +398,9 @@ export default function Home() {
               transition: "color 0.3s ease",
             }}>
               <span className={`g-status-ember${thinking || loading ? " typing" : ""}`} />
-              {thinking ? "thinking..." : loading ? "typing..." : "online"}
+              {bridge?.text
+                ? <em style={{ fontStyle: "italic", opacity: 0.92 }}>{bridge.text}</em>
+                : thinking ? "thinking..." : loading ? "typing..." : "online"}
             </div>
           </div>
 
