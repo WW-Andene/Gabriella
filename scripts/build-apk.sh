@@ -77,10 +77,18 @@ export BW_KEYSTORE_PASSWORD BW_KEY_PASSWORD BW_KEY_ALIAS
 echo "→ Running bubblewrap build"
 rm -rf "$BUILD_DIR"
 mkdir  "$BUILD_DIR"
-cp android.keystore "$BUILD_DIR/android.keystore"
 cd "$BUILD_DIR"
-bubblewrap init --manifest "../twa-manifest.json" --skipPwaValidation=false
-bubblewrap build --skipPwaValidation=false
+# bubblewrap init's --manifest wants a URL to the live Web App
+# Manifest (not our local twa-manifest.json). It generates a scaffold
+# + a fresh twa-manifest.json from the URL; we then overwrite it with
+# our committed one and run `update` to regenerate the Android
+# project against our overrides. --skipPwaValidation avoids
+# eligibility checks that often reject Next.js PWAs.
+bubblewrap init --manifest "https://${HOST}/manifest.webmanifest" --skipPwaValidation
+cp ../twa-manifest.json ./twa-manifest.json
+bubblewrap update --skipPwaValidation
+cp ../android.keystore ./android.keystore
+bubblewrap build --skipPwaValidation
 
 APK_PATH=$(find . -maxdepth 3 -name "*.apk" -print -quit)
 if [ -z "$APK_PATH" ]; then
