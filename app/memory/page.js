@@ -222,6 +222,34 @@ export default function MemoryPage() {
           </>
         )}
 
+        <h2 style={css.h2}>Export</h2>
+        <div style={css.card}>
+          <p style={{ fontSize: 13, color: "#cfcfd8", lineHeight: 1.6, margin: "0 0 8px" }}>
+            Download everything she knows about you as a single markdown file — conversation log, her self-model, her stream, her retired positions. Portable, diffable, useful for archiving before a wipe.
+          </p>
+          <a href="/api/export" download style={{
+            display: "inline-block", padding: "8px 16px",
+            background: "rgba(130,175,255,0.1)",
+            border: "1px solid rgba(130,175,255,0.3)",
+            color: "rgba(190,210,255,0.92)",
+            borderRadius: 6, fontSize: 13, cursor: "pointer",
+            fontFamily: "inherit", textDecoration: "none",
+          }}>
+            ⬇ download as markdown
+          </a>
+          <a href="/api/export?format=json" style={{
+            display: "inline-block", padding: "8px 16px",
+            marginLeft: 10,
+            background: "transparent",
+            border: "1px solid #33334a",
+            color: "#8a8a99",
+            borderRadius: 6, fontSize: 12, cursor: "pointer",
+            fontFamily: "inherit", textDecoration: "none",
+          }}>
+            raw json
+          </a>
+        </div>
+
         <h2 style={css.h2}>Nuclear option</h2>
         <div style={css.card}>
           <p style={{ fontSize: 13, color: "#cfcfd8", lineHeight: 1.6, margin: "0 0 6px" }}>
