@@ -1,6 +1,10 @@
 {
   "crons": [
     {
+      "path": "/api/inner-loop",
+      "schedule": "*/10 * * * *"
+    },
+    {
       "path": "/api/think",
       "schedule": "0 */6 * * *"
     },
