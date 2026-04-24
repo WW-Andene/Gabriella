@@ -64,13 +64,13 @@ function splitIntoFragments(text) {
 // all of them off cleanly so the rendered bubbles only contain natural
 // prose, and surface the structured data for UI panels.
 const SEP = "\u001F";
-const SIDECARS = ["__TOOL__", "__THINK__", "__FELT__"];
+const SIDECARS = ["__TOOL__", "__THINK__", "__FELT__", "__PEEK__"];
 
 function extractSidecars(streamText) {
   // Single pass: find each leading SEP, read marker + payload up to the
   // closing SEP, strip it, continue. Unknown markers preserved in text.
   let text = streamText;
-  const found = { tool: null, think: null, felt: null };
+  const found = { tool: null, think: null, felt: null, peek: null };
   let idx = text.indexOf(SEP);
   while (idx !== -1) {
     let marker = null;
@@ -87,6 +87,7 @@ function extractSidecars(streamText) {
       if (marker === "__TOOL__")  found.tool  = parsed;
       if (marker === "__THINK__") found.think = parsed;
       if (marker === "__FELT__")  found.felt  = parsed;
+      if (marker === "__PEEK__")  found.peek  = parsed;
     } catch { /* malformed — skip */ }
     text = text.slice(0, idx) + text.slice(endIdx + SEP.length);
     idx = text.indexOf(SEP);
@@ -114,6 +115,11 @@ export default function Home() {
   const [innerThought, setInnerThought] = useState(null);
   const [feltSnapshot,  setFeltSnapshot]  = useState(null);
   const [showInner, setShowInner] = useState(false);
+  // Glass-mind peek — arrives EARLY in the stream (before the typing
+  // delay) so the user can see what she's about to do while the typing
+  // dots are still animating. Cleared when the response finalizes so
+  // the static innerThought panel takes over.
+  const [peek, setPeek] = useState(null);
   const bottomRef                   = useRef(null);
   const abortRef                    = useRef(null);
   const inputRef                    = useRef(null);
@@ -139,13 +145,21 @@ export default function Home() {
   }, []);
 
   // Derived: assistant bubbles for the CURRENT streaming turn (if any).
-  // Strip any sidecars from the preview — tool, think, and felt markers
-  // are not visible prose, just metadata.
-  const streamingBubbles = useMemo(() => {
-    if (!streaming) return [];
-    const { text } = extractSidecars(streaming);
-    return splitIntoFragments(text);
+  // Strip all sidecars. Also surface the peek sidecar live — it arrives
+  // before the response does, so we capture it while streaming.
+  const { streamingBubbles, livePeek } = useMemo(() => {
+    if (!streaming) return { streamingBubbles: [], livePeek: null };
+    const parsed = extractSidecars(streaming);
+    return {
+      streamingBubbles: splitIntoFragments(parsed.text),
+      livePeek:         parsed.peek || null,
+    };
   }, [streaming]);
+
+  // Keep peek state in sync with what's arriving during the stream.
+  useEffect(() => {
+    if (livePeek) setPeek(livePeek);
+  }, [livePeek]);
 
   const send = async () => {
     if (!input.trim() || loading) return;
@@ -234,6 +248,7 @@ export default function Home() {
       }
       setInnerThought(think || null);
       setFeltSnapshot(felt || null);
+      setPeek(null);   // clear peek — innerThought panel takes over now
       setStreaming("");
     } catch (err) {
       if (err.name === "AbortError") return;
@@ -348,6 +363,46 @@ export default function Home() {
             </button>
           </div>
         </div>
+
+        {/* Glass-mind peek — arrives at the top of the stream, visible
+            during the typing-dots phase. Shows what she's ABOUT to do
+            (felt-state, silence/wit flags, core consensus) before the
+            response lands. Replaced by the innerThought panel once
+            the response finalizes. */}
+        {showInner && peek && streaming && (
+          <div style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            background: "rgba(130,175,255,0.06)",
+            border: "1px solid rgba(130,175,255,0.18)",
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 1.55,
+            color: "rgba(190,210,255,0.78)",
+            fontStyle: "italic",
+          }}>
+            <div style={{
+              fontSize: 9,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "rgba(130,175,255,0.55)",
+              marginBottom: 4,
+              fontStyle: "normal",
+            }}>
+              glass mind — what she's about to do
+            </div>
+            {peek.charge && <div><strong style={{fontStyle:"normal",color:"rgba(190,210,255,0.6)"}}>charge:</strong> {peek.charge}</div>}
+            {peek.want && <div><strong style={{fontStyle:"normal",color:"rgba(190,210,255,0.6)"}}>want:</strong> {peek.want}</div>}
+            {peek.edge && <div><strong style={{fontStyle:"normal",color:"rgba(190,210,255,0.6)"}}>edge:</strong> {peek.edge}</div>}
+            <div style={{fontSize: 11, fontStyle: "normal", color: "rgba(130,175,255,0.55)", marginTop: 5}}>
+              {peek.temperature && <span>temp: {peek.temperature} · </span>}
+              {peek.consensus && <span>cores: {peek.consensus} · </span>}
+              {peek.silence && <span style={{color:"rgba(200,130,130,0.7)"}}>silence policy: {peek.silence} · </span>}
+              {peek.wit && <span style={{color:"rgba(200,200,130,0.7)"}}>wit flavor: {peek.wit} · </span>}
+              {peek.retried && <span style={{color:"rgba(200,130,130,0.7)"}}>retried · </span>}
+            </div>
+          </div>
+        )}
 
         {/* Inner-life panel — shows only when toggle is on AND we have data
             from the last turn. Subtle, sits below the header, collapses to

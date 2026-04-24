@@ -274,6 +274,29 @@ export async function POST(req) {
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
+        // PEEK sidecar — emitted BEFORE the pre-stream delay so the
+        // client can render "what she's about to do" during the typing-
+        // dots phase. Glass-mind mode: the user sees her plan while she's
+        // still preparing to speak. Not the final response, just the
+        // interpretive frame — felt-state summary, silence / wit flags,
+        // whether the cores diverged, whether a gauntlet retry happened.
+        try {
+          const peek = {
+            charge:      feltState?.charge      || null,
+            emotional:   feltState?.emotional   || null,
+            want:        feltState?.want        || null,
+            temperature: feltState?.temperature || null,
+            edge:        feltState?.edge        || null,
+            consensus:   consensus              || null,
+            retried:     !!retried,
+            silence:     feltState?._silence?.kind || null,
+            wit:         feltState?._wit?.flavor || null,
+          };
+          controller.enqueue(encoder.encode(
+            `\u001F__PEEK__${JSON.stringify(peek)}\u001F`,
+          ));
+        } catch { /* peek is optional; never block streaming */ }
+
         await sleep(cadence.preDelayMs);
         for (let i = 0; i < fragments.length; i++) {
           await streamString(fragments[i], controller, encoder, cadence.perCharMs);
