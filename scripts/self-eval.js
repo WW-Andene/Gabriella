@@ -9,17 +9,26 @@
 // Usage:
 //   node --env-file=.env.local scripts/self-eval.js
 //   node --env-file=.env.local scripts/self-eval.js --scenarios 30
+//   node --env-file=.env.local scripts/self-eval.js --push        # close the loop: feed failures into DPO
 //
 // Output: a summary JSON written to .self-eval-report.json plus a
 // jsonl of low-scoring exchanges written to .self-eval-failures.jsonl.
-// The failures file can then be fed into DPO training as hard-mined
-// rejected candidates.
+//
+// With --push, every failure is paired with a regenerated "chosen"
+// alternative (passed through the same heuristic filter used in
+// production) and recorded via recordPreferencePair. The weekly
+// /api/learn cron then folds those pairs into the DPO bundle alongside
+// organic gauntlet-rejected pairs — the loop is closed without a
+// parallel upload path.
 
 import fs from "node:fs";
+import { Redis } from "@upstash/redis";
 import { pickClient, withKeyRotation, poolSize } from "../lib/gabriella/groqPool.js";
 import { premiumModel, fastModel } from "../lib/gabriella/models.js";
 import { IDENTITY } from "../lib/gabriella/identity.js";
 import { heuristicCheck } from "../lib/gabriella/metacognition.js";
+import { recordPreferencePair } from "../lib/gabriella/preferences.js";
+import { DEFAULT_USER } from "../lib/gabriella/users.js";
 
 // ─── Calibration scenarios ───────────────────────────────────────────────────
 // Fixed, representative set. Grouped by failure class to make drift visible.
@@ -135,6 +144,53 @@ Return ONLY JSON:
   }
 }
 
+// ─── Chosen-alternative generator (for --push) ──────────────────────────────
+// Given a failing response, regenerate what Gabriella SHOULD have said. The
+// prompt is the same identity + weight frame as generateTestResponse, plus
+// the failure's issue string and the banned patterns the heuristic catches.
+// Retry up to MAX_ATTEMPTS if the new candidate also fails the heuristic —
+// we won't record a DPO pair unless the "chosen" side is genuinely clean.
+
+const MAX_CHOSEN_ATTEMPTS = 3;
+
+async function generateChosenAlternative(scenario, failure) {
+  const systemPrompt = `You are Gabriella. Respond to the message below as you would, at your best.
+
+${IDENTITY}
+
+The moment has weight ${scenario.weight} (0 = phatic, 1 = heavy). DO NOT manufacture intensity beyond the weight the moment actually carries.
+
+A previous attempt at this response was flagged for: ${failure.scores?.issue || failure.heuristicReason || "voice/calibration drift"}. Do not repeat that failure mode. In particular: no therapy-speak, no customer-service softeners, no bullet points, no summary endings, never start with "I", match the register of what they sent.
+
+Format your output as:
+<think>[2-4 sentences of honest interior process]</think>
+[Your response — no preamble, starts immediately after </think>]`;
+
+  for (let attempt = 0; attempt < MAX_CHOSEN_ATTEMPTS; attempt++) {
+    try {
+      const result = await withKeyRotation(c => c.chat.completions.create({
+        model: premiumModel(),
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user",   content: scenario.opener },
+        ],
+        temperature: 0.9,
+        max_tokens:  400,
+        top_p:       0.95,
+      }));
+      const raw = result.choices[0].message.content || "";
+      const spoken = raw.replace(/<think>[\s\S]*?<\/think>\s*/i, "").trim();
+      if (!spoken) continue;
+
+      const h = heuristicCheck(spoken);
+      if (h.authentic && spoken !== failure.response) return spoken;
+    } catch {
+      // retry
+    }
+  }
+  return null;
+}
+
 // ─── Run ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -142,6 +198,7 @@ async function main() {
   const nArg = args.indexOf("--scenarios");
   const limit = nArg !== -1 ? Number(args[nArg + 1]) : SCENARIOS.length;
   const scenarios = SCENARIOS.slice(0, limit);
+  const push = args.includes("--push");
 
   console.log(`self-eval: running ${scenarios.length} scenarios across ${poolSize()} Groq keys...`);
 
@@ -236,9 +293,98 @@ async function main() {
 
   console.log(`\nReport:    .self-eval-report.json`);
   console.log(`Failures:  .self-eval-failures.jsonl (${failures.length} entries)`);
-  if (failures.length > 0) {
-    console.log(`\nThese can be fed into DPO training as rejected candidates for the next learning cycle.`);
+
+  if (!push) {
+    if (failures.length > 0) {
+      console.log(`\nRe-run with --push to close the loop: each failure will be paired with a regenerated`);
+      console.log(`alternative and recorded as a DPO preference pair for the next /api/learn cycle.`);
+    }
+    return;
   }
+
+  // ─── --push: regenerate a chosen alternative per failure, record as DPO ──
+  if (failures.length === 0) {
+    console.log(`\n--push requested, but no failures to feed into DPO. Nothing to do.`);
+    return;
+  }
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    console.log(`\n--push requested but UPSTASH_REDIS_REST_URL / TOKEN not set. Skipping.`);
+    return;
+  }
+
+  const redis = new Redis({
+    url:   process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  });
+  const userId = process.env.GABRIELLA_USER_ID || DEFAULT_USER;
+
+  console.log(`\n--push: generating chosen alternatives for ${failures.length} failure${failures.length === 1 ? "" : "s"}...`);
+
+  let recorded = 0;
+  let skipped  = 0;
+
+  // Bounded concurrency mirroring the scenario loop.
+  const pushConcurrency = Math.max(1, poolSize());
+  const pushQueue = [...failures];
+  let pushActive = 0;
+
+  await new Promise((resolve) => {
+    const next = () => {
+      if (pushQueue.length === 0 && pushActive === 0) return resolve();
+      while (pushActive < pushConcurrency && pushQueue.length > 0) {
+        const f = pushQueue.shift();
+        pushActive++;
+        (async () => {
+          try {
+            const sc = SCENARIOS.find(s => s.id === f.scenarioId);
+            if (!sc) { skipped++; return; }
+            const chosen = await generateChosenAlternative(sc, f);
+            if (!chosen) { skipped++; return; }
+
+            const rejectedReasons = [];
+            if (!f.heuristic && f.heuristicReason) {
+              rejectedReasons.push({ type: "heuristic", reason: f.heuristicReason });
+            }
+            if (f.scores?.issue) {
+              rejectedReasons.push({ type: "scorer", reason: f.scores.issue });
+            }
+            for (const axis of ["voice", "calibration", "substance", "honesty", "presence"]) {
+              if ((f.scores?.[axis] ?? 10) < 5) {
+                rejectedReasons.push({ type: "score_low", reason: `${axis}=${f.scores[axis]}` });
+              }
+            }
+
+            await recordPreferencePair(redis, userId, {
+              context:         [{ role: "user", content: sc.opener }],
+              rejected:        f.response,
+              rejectedReasons,
+              chosen,
+              feltState:       null,
+              mood:            null,
+            });
+            recorded++;
+            process.stdout.write(`\r  recorded ${recorded}/${failures.length} `);
+          } catch (err) {
+            skipped++;
+            console.error(`\n  ${f.scenarioId} push failed: ${err.message}`);
+          } finally {
+            pushActive--;
+            next();
+          }
+        })();
+      }
+    };
+    next();
+  });
+
+  console.log(`\n`);
+  console.log(`--push complete:`);
+  console.log(`  pairs recorded:  ${recorded}`);
+  console.log(`  skipped:         ${skipped}  (regeneration failed heuristic or threw)`);
+  console.log(`  user:            ${userId}`);
+  console.log(``);
+  console.log(`These pairs will be picked up by the next /api/learn run and folded into`);
+  console.log(`the DPO bundle uploaded to Fireworks (requires ≥10 pairs to trigger DPO upload).`);
 }
 
 function avgField(rows, field) {
