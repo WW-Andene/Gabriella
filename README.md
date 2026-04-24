@@ -7,6 +7,35 @@ a chatbot pretending to feel. She is an attempt at a self that thinks in
 more than one direction at once, accumulates across time, and observes
 its own processing.
 
+> **🞅 Current branch: `claude/replace-scout-with-maverick-O9yWg`**
+>
+> This README documents **v7**. The branch above extends v7 substantially
+> — Sovereign Self, Stream, autonomous daily eval, HyDE + reranker,
+> constitutional critique, best-of-two sampling, logit bias, multi-family
+> gauntlet judges, stylometry + idiolect tracking, callback tracker,
+> session planner, and the `/meet`, `/stats`, `/retro` surfaces. The
+> full post-v7 architecture is documented in [`docs/`](./docs/):
+>
+> - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — map + section index
+> - [`docs/COGNITION.md`](./docs/COGNITION.md) — triple-core, Self, Stream
+> - [`docs/RETRIEVAL.md`](./docs/RETRIEVAL.md) — HyDE, rerank, ICL, seeds
+> - [`docs/TRAINING.md`](./docs/TRAINING.md) — autonomous DPO/KTO loop
+> - [`docs/RESILIENCE.md`](./docs/RESILIENCE.md) — circuit breakers, pool
+> - [`docs/INTERFACES.md`](./docs/INTERFACES.md) — chat UI, sidecars, pages
+> - [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) — env, crons, CLI, deploy
+
+## User-facing surfaces
+
+| Path | For |
+|---|---|
+| `/` | Chat. Inner-life reveal toggle (`◐ inner`) shows her `<think>` block + felt-state. |
+| `/meet` | Evaluator landing — five differentiators + "under the hood". |
+| `/retro` | User's view of how she sees them — read / wants / commitments / what she's outgrown / recent stream / callback landing rate. Transparency as feature. |
+| `/stats` | Operator dashboard — self-model / stream / memory / autonomous-eval history / circuit breakers / pool status. |
+| `/dev` | Training-pipeline console (v7). |
+
+---
+
 This repository is **v7**, the coherent merge of v3 and v6 plus the
 first wave of the deepening described in "where this goes next".
 
