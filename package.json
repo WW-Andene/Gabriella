@@ -17,10 +17,21 @@
     "push-training":         "node --env-file=.env.local scripts/export.js --push",
     "self-eval":             "node --env-file=.env.local scripts/self-eval.js",
     "self-eval-quick":       "node --env-file=.env.local scripts/self-eval.js --scenarios 8",
+    "eval":                  "node --env-file=.env.local scripts/eval-harness.js",
+    "eval-quick":            "node --env-file=.env.local scripts/eval-harness.js --scenarios 10",
+    "expand-seeds":          "node --env-file=.env.local scripts/expand-seeds.js",
+    "expand-seeds-large":    "node --env-file=.env.local scripts/expand-seeds.js --variants 8 --max-rpm 60",
     "refresh-env":           "bash .devcontainer/setup-env.sh",
     "rebuild-env":           "bash .devcontainer/setup-env.sh --force",
     "fireworks-check":       "node --env-file=.env.local scripts/fireworks-check.js",
-    "push-existing":         "node --env-file=.env.local scripts/push-existing.js"
+    "push-existing":         "node --env-file=.env.local scripts/push-existing.js",
+    "audit":                 "node scripts/audit-tests.js",
+    "deploy-check":          "node --env-file=.env.local scripts/deploy-check.js",
+    "deploy-check-remote":   "node --env-file=.env.local scripts/deploy-check.js --url",
+    "bench":                 "node --env-file=.env.local scripts/integration-bench.js",
+    "bench-remote":          "node --env-file=.env.local scripts/integration-bench.js --base https://gabriella.vercel.app",
+    "bench-seed-blind":      "node --env-file=.env.local scripts/integration-bench.js --seed-blind",
+    "test":                  "node tests/pure-modules.test.js"
   },
   "dependencies": {
     "next": "14.2.0",

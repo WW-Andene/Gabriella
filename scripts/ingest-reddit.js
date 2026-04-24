@@ -8,7 +8,7 @@
 //
 //   For every URL:
 //     - fetch thread, parse into exchanges
-//     - generate Gabriella's response to each exchange (Scout as teacher)
+//     - generate Gabriella's response to each exchange (Maverick as teacher)
 //     - score + tier each pair (auto / review / drop)
 //
 //   Writes:

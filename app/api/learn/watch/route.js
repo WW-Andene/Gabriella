@@ -42,20 +42,22 @@ const redis = new Redis({
 const USER_ID = "user_default";
 
 export async function GET(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   try {
     const cfg = fireworksConfig();
+
+    // Always load speaker state so the response is useful even without a
+    // pending job — the dev UI needs this to show what's active.
+    const speaker = await loadSpeakerStatus(redis, USER_ID).catch(() => null);
+
     if (!fireworksReady(cfg)) {
-      return json({ ok: true, skipped: true, reason: "Fireworks credentials not configured" });
+      return json({ ok: true, skipped: true, reason: "Fireworks credentials not configured", speaker });
     }
 
     const pending = await loadPendingJob(redis, USER_ID);
     if (!pending) {
-      return json({ ok: true, skipped: true, reason: "no pending job" });
+      return json({ ok: true, skipped: true, reason: "no pending job", speaker, pending: null });
     }
 
     const status = await getSftJob({
@@ -71,7 +73,9 @@ export async function GET(req) {
         ok:        true,
         action:    "still-running",
         job:       pending,
+        pending:   { ...pending, state },
         state,
+        speaker,
       });
     }
 
@@ -87,7 +91,7 @@ export async function GET(req) {
           error:       status.error,
         }),
       ]);
-      return json({ ok: true, action: "cleared-failed", state, error: status.error });
+      return json({ ok: true, action: "cleared-failed", state, error: status.error, speaker, pending: null });
     }
 
     // COMPLETED — deploy (best-effort) and activate.
@@ -128,11 +132,13 @@ export async function GET(req) {
         action:  "activated",
         modelId: status.modelId,
         deploy,
+        speaker: { ...speaker, activeModel: status.modelId },
+        pending: null,
       });
     }
 
     // Unknown terminal state.
-    return json({ ok: true, action: "unknown-terminal-state", state });
+    return json({ ok: true, action: "unknown-terminal-state", state, speaker, pending });
 
   } catch (err) {
     console.error("Watch route failed:", err);
@@ -143,10 +149,7 @@ export async function GET(req) {
 // Inspection — useful when debugging from mobile:
 //   POST /api/learn/watch   → returns pending job + current speaker state
 export async function POST(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   const [pending, speaker] = await Promise.all([
     loadPendingJob(redis, USER_ID),
@@ -160,13 +163,19 @@ export async function POST(req) {
 // Useful if the fine-tune is producing bad outputs and you want to roll
 // back without touching env vars.
 export async function DELETE(req) {
-  const auth = req.headers.get("authorization");
-  if (process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
 
   await clearActiveSpeakerModel(redis, "manual rollback via DELETE", USER_ID);
   return json({ ok: true, cleared: true });
+}
+
+function authorized(req) {
+  if (!process.env.CRON_SECRET) return true;
+  const auth = req.headers.get("authorization");
+  if (auth === `Bearer ${process.env.CRON_SECRET}`) return true;
+  const url = new URL(req.url);
+  if (url.searchParams.get("key") === process.env.CRON_SECRET) return true;
+  return false;
 }
 
 function isTerminal(state) {

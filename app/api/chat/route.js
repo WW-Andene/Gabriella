@@ -28,24 +28,30 @@
 //                         quoted phrases are fed back into the dynamic
 //                         banned list so the heuristic filter evolves.
 
-import { buildGabriella, updateGabriella, redis, USER_ID } from "../../../lib/gabriella/engine.js";
-import { parseMonologue }                                   from "../../../lib/gabriella/monologue.js";
+import { buildGabriella, updateGabriella, redis } from "../../../lib/gabriella/engine.js";
 import {
-  runMetacognition, heuristicCheck,
+  runMetacognition,
   getDynamicBanned, recordBannedPhrase, extractPhraseFromFailure,
 } from "../../../lib/gabriella/metacognition.js";
-import { speak }                                            from "../../../lib/gabriella/speaker.js";
-import { runGauntlet, getGauntletConstraintBlock, generateFallback } from "../../../lib/gabriella/gauntlet.js";
 import { logExchange }                                      from "../../../lib/gabriella/logger.js";
-import { patchSystemPromptLinguistics }                     from "../../../lib/gabriella/linguistics.js";
-import { runTripleCore }                                    from "../../../lib/gabriella/clone/index.js";
 import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
-import { deliberate }                                       from "../../../lib/gabriella/reasoning.js";
-import { premiumModel, unifiedCognition }                   from "../../../lib/gabriella/models.js";
-import { pickClient }                                       from "../../../lib/gabriella/groqPool.js";
+import { recordEnsembleLabel }                              from "../../../lib/gabriella/ensembleJudge.js";
+import { checkContradiction }                               from "../../../lib/gabriella/contradiction.js";
+import { withKeyRotation }                                  from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
+import { logError, logWarn }                                from "../../../lib/gabriella/debugLog.js";
+import { chatCompletion, fireworksConfig, fireworksReady }  from "../../../lib/gabriella/fireworks.js";
+import { computeCadence, sleep }                            from "../../../lib/gabriella/cadence.js";
+import { premiumModel }                                     from "../../../lib/gabriella/models.js";
+import { runTurn }                                          from "../../../lib/gabriella/turn.js";
+import { speculativeOpener, warmPrefix }                    from "../../../lib/gabriella/ttft.js";
+import { ingestTurn as graphIngestTurn }                   from "../../../lib/gabriella/graph.js";
+import { recordFingerprintTurn }                           from "../../../lib/gabriella/userFingerprint.js";
+import { tagResponse, scoreOutcome, recordStyleOutcome }   from "../../../lib/gabriella/learningLoop.js";
+import { tick as tickRelTime, computeTickMultiplier }      from "../../../lib/gabriella/relationalTime.js";
+import { recordPosition }                                  from "../../../lib/gabriella/dialectical.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -59,15 +65,50 @@ export const runtime     = "nodejs";
 // Small, human-feeling chunks — not pre-token streaming, but the illusion of
 // typing. The vetted response is complete before streaming begins.
 
-function streamString(text, controller, encoder) {
+// ─── Substance-marker detector — content override for the pragmatic fast-path ─
+// A 5-word turn-2 message can still carry real weight. Pragmatics scores
+// by accumulated substrate, which is sparse early; markers of substance
+// let a short message break through that gate and reach the cores.
+//
+// Conservative by design: only fires on clear signals. If in doubt,
+// the fast-path still wins — we'd rather take a light path on an
+// ambiguous heavy moment than force depth on a truly phatic one.
+const SUBSTANCE_MARKERS = [
+  // Questions about self / inner life / meaning — short but heavy
+  /\b(do you|have you|are you|can you|could you|would you)\s+(ever|still|really|actually|genuinely|honestly)\b/i,
+  /\b(do|have|are|can|could|would)\s+(you\s+)?ever\s+(feel|felt|think|thought|wonder|wondered|miss|missed|regret|love|hate|want)\b/i,
+  /\bwhat\s+(makes|made|does it|is it like|do you)\b/i,
+  /\bwhy\s+(do|did|does|does it|are you|do you)\b/i,
+  // Emotional vocabulary — if they name a feeling, it's not small talk
+  /\b(lonely|alone|scared|afraid|tired|exhausted|broken|hurt|hurting|grief|grieving|lost|trapped|stuck|dying|suicidal|empty|numb|ashamed|regret|sorry|miss|missing|longing|yearning)\b/i,
+  // Personal revelation framing
+  /\b(i just|i've been|i can't|i don't know|i'm not sure|i keep|i wish|i need|i feel like|it feels like|i feel|i felt)\b/i,
+  // Meta-relational openers — "can I ask you something" / "something I've been thinking"
+  /\b(can i ask|something i've been|something i want|something i need|i want to tell|i have to tell|i need to tell)\b/i,
+  // Heavy topics by keyword
+  /\b(death|dying|loss|grief|mortality|meaning|purpose|existence|god|love|trust|betrayal|abuse|trauma|therapy)\b/i,
+];
+
+function detectSubstanceMarkers(text) {
+  if (!text || typeof text !== "string") return false;
+  const trimmed = text.trim();
+  // Very short messages (1-2 words) are almost always phatic unless they're a
+  // heavy standalone question. "what?" "why?" are context-dependent; let the
+  // fast-path handle those — they're correct as light.
+  if (trimmed.length < 8) return false;
+  return SUBSTANCE_MARKERS.some(rx => rx.test(trimmed));
+}
+
+function streamString(text, controller, encoder, perCharMs = { min: 4, max: 12 }) {
   return new Promise((resolve) => {
     let i = 0;
+    const spread = Math.max(0, perCharMs.max - perCharMs.min);
     function sendNext() {
       if (i >= text.length) { resolve(); return; }
       const chunkSize = Math.floor(Math.random() * 4) + 2;
       controller.enqueue(encoder.encode(text.slice(i, i + chunkSize)));
       i += chunkSize;
-      setTimeout(sendNext, Math.random() * 8 + 4);
+      setTimeout(sendNext, Math.random() * spread + perCharMs.min);
     }
     sendNext();
   });
@@ -77,7 +118,8 @@ function streamString(text, controller, encoder) {
 
 export async function POST(req) {
   try {
-    const { messages } = await req.json();
+    const { messages, privacy: privacyFlag } = await req.json();
+    const ephemeral = privacyFlag === true;
 
     // Resolve user id (header / cookie / derived). Register for cron
     // iteration. All subsequent state is keyed to this userId.
@@ -108,7 +150,22 @@ export async function POST(req) {
       narrative,
       trajectory,
       phase,
-    } = await buildGabriella(messages, { userId });
+      self,
+      _phaseTimings,
+    } = await buildGabriella(messages, { userId, ephemeral });
+
+    // Per-turn prompt-size audit — record approximate token count for
+    // the full system prompt + count of populated vs empty blocks.
+    // Zero LLM cost, ~one Redis write per turn. Surfaced on /stats.
+    const promptChars = (systemPrompt || "").length;
+    const promptTokensApprox = Math.ceil(promptChars / 4);
+    redis.lpush(`${userId}:prompt:sizes`, JSON.stringify({
+      at:         Date.now(),
+      chars:      promptChars,
+      tokensApprox: promptTokensApprox,
+      phaseTimings: _phaseTimings || null,
+    })).catch(() => null);
+    redis.ltrim(`${userId}:prompt:sizes`, 0, 199).catch(() => null);
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
     const [withheldRaw, dynamicBanned] = await Promise.all([
@@ -130,10 +187,22 @@ export async function POST(req) {
     //     mood, memory, chronology, and register are preserved). It
     //     just skips the interpretive pipeline that was producing
     //     unjustified intensity.
+    //
+    //     Content override: a short message on sparse context can still
+    //     carry real substance — "do you ever feel trapped?" on turn 2
+    //     is 5 words but isn't small talk. If the message contains
+    //     markers of substance (questions about self/feeling/meaning,
+    //     emotional vocabulary, or explicit vulnerability), refuse the
+    //     fast-path even at low pragmatic weight. The cores get to see
+    //     moments the classifier can't score yet.
+    const lastUserMessageText = recentMessages[recentMessages.length - 1]?.content || "";
+    const hasSubstanceMarkers = detectSubstanceMarkers(lastUserMessageText);
+
     const fastPathEligible =
       pragmatics &&
       (pragmatics.act === "phatic" || (pragmatics.act === "casual" && pragmatics.weight < 0.22)) &&
-      pragmatics.weight < 0.25;
+      pragmatics.weight < 0.25 &&
+      !hasSubstanceMarkers;
 
     if (fastPathEligible) {
       const fastResponse = await generateFastPath({
@@ -143,11 +212,27 @@ export async function POST(req) {
         currentMood,
       });
 
+      // Phase 7: compute pre-stream thinking delay for the fast path.
+      // Phatic exchanges should feel responsive but not robotic —
+      // computeCadence produces 200-400ms here.
+      const fastCadence = computeCadence({
+        state:          affectState,
+        pragmatics,
+        responseLength: fastResponse.length,
+        isReentry:      false,
+        gapSinceLastTurnMs: 0,
+        textingRegister: "typed",
+      });
+
       const encoder  = new TextEncoder();
       const readable = new ReadableStream({
         async start(controller) {
-          await streamString(fastResponse, controller, encoder);
+          await sleep(fastCadence.preDelayMs);
+          await streamString(fastResponse, controller, encoder, fastCadence.perCharMs);
           controller.close();
+
+          // Privacy mode — skip all background persistence on fast-path too.
+          if (ephemeral) return;
 
           const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
           Promise.allSettled([
@@ -156,7 +241,7 @@ export async function POST(req) {
               withheldCandidate, debtCall, activeAgenda, activeThreshold,
               currentRegister, currentAuthorial, ripeSeed,
               null, reasoningTrace,
-              { userId },
+              { userId, pragmatics, chronology, self, ephemeral },
             ),
             recordEpisode(redis, userId, {
               userMsg:   lastUser,
@@ -184,161 +269,163 @@ export async function POST(req) {
       });
     }
 
-    // 3. Cognition — triple-core by default; collapsed to a single-pass
-    //    unified interpretation if UNIFIED_COGNITION is set. Unified mode
-    //    is for AFTER a strong SFT has been activated: the cores served
-    //    their purpose generating multi-angle training data, and at
-    //    inference a trained speaker can carry integration alone.
-    const {
-      feltState,
-      alpha: alphaResult,
-      beta:  betaResult,
-      gamma: gammaResult,
-      consensus,
-    } = unifiedCognition()
-      ? await runUnifiedCognition({
-          memory, recentMessages, currentMood, pragmatics, reasoningTrace,
-        })
-      : await runTripleCore({
-      soul:          memory.soul,
-      recentMessages,
-      memory,
-      currentMood,
-      agenda:        activeAgenda,
-      debt:          debtCall,
-      withheld,
-      register:      currentRegister,
-      authorial:     currentAuthorial,
-      threshold:     activeThreshold,
-      imaginal:      ripeSeed,
-      questionEval,
-      // Structured temporal — Gamma queries these before interpreting.
-      chronology,
-      arc:           currentArc,
-      recurrence,
-      // Interior continuity — every core sees what she has been turning
-      // over across turns, so interpretation is a continuation, not a
-      // cold start.
-      reasoningTrace,
-      // Pragmatic classification — act, weight, register, substrate.
-      // Bounds how much intensity each core is allowed to read into
-      // the moment.
-      pragmatics,
+    // 3. Per-turn pipeline — kicked off in PARALLEL with a speculative
+    //    opener so the ReadableStream can emit a __BRIDGE__ sidecar
+    //    within ~500ms (presence signal) while the heavy triple-core +
+    //    gauntlet + speaker flow still assembles the real reply.
+    //
+    //    Priors (person + narrative) flow into the cores as continuity
+    //    signals. The opener is capped at 10 words, fast-tier, circuit-
+    //    broken — on failure the UX degrades to the original un-bridged
+    //    path with no user-visible impact.
+    const openerPromise = speculativeOpener({
+      redis, userId,
+      messages: recentMessages,
+      mood:     currentMood,
+      timeoutMs: 850,
+    }).catch(() => null);
+
+    // Warm provider-side prefix cache for the heavy call's system
+    // prompt. Fire-and-forget, circuit-broken, doesn't block anything.
+    warmPrefix({ redis, systemPrompt }).catch(() => null);
+
+    const turnPromise = runTurn({
+      // buildGabriella output
+      messages, recentMessages, memory, currentMood,
+      withheldCandidate, debtCall, activeAgenda, activeThreshold,
+      currentRegister, currentAuthorial, ripeSeed,
+      questionEval, chronology, currentArc, recurrence,
+      reasoningTrace, pragmatics, affectState, personModel, narrative,
+      trajectory, phase, self,
+      // Lifecycle state
+      withheld, dynamicBanned,
+      // Infra
+      redis, userId,
     });
 
-    // 3a. Upgrade the linguistics block with the full felt-state. Kept for
-    //     logging / downstream inspection — the speaker builds its own
-    //     prompt from the felt-state directly, not from this string.
-    const enrichedSystemPrompt = patchSystemPromptLinguistics(systemPrompt, feltState, currentMood);
-
-    // 3b. Tag felt-state with mood so the speaker's linguistics block picks
-    //     up the current mood palette without a second parameter.
-    const taggedFeltState = { ...feltState, _mood: currentMood };
-
-    // 3c. Deliberation — the thinking layer. Produces structured cognition:
-    //     actual chain-of-thought, the decision she's making, any initiative
-    //     she's bringing, linking to earlier turns, self-critique. The
-    //     speaker receives this in its prompt and writes the response the
-    //     thinking implies, instead of generating from a felt-state alone.
-    //     This is what makes her think instead of react.
-    const deliberation = await deliberate({
-      feltState:       taggedFeltState,
-      memory,
-      trace:           reasoningTrace,
-      recentMessages,
-      currentRegister,
-      currentMood,
-      questionEval,
-      activeAgenda,
-      activeThreshold,
-      ripeSeed,
-      pragmatics,
-    });
-
-    // 4. Speaker receives felt-state + deliberation + messages.
-    //    Passing redis lets the speaker route to Fireworks if a
-    //    fine-tune has been activated, with automatic Groq fallback.
-    const rawCandidate = await speak(taggedFeltState, recentMessages, redis, deliberation, pragmatics);
-    const { innerThought: thought1, response: candidate, uncertain: uncertain1 } = parseMonologue(rawCandidate);
-
-    // 5. Heuristic pre-check — instant, no LLM cost. Dynamic banned list
-    //    passed in so recently-penalized phrases trip the filter without
-    //    waiting for the gauntlet to catch them again.
-    const heuristic              = heuristicCheck(candidate, dynamicBanned);
-    const candidateNeedsGauntlet = heuristic.authentic;
-
-    // 6. Gauntlet — only run full LLM checks if heuristic passed.
-    //    questionEval flows in so checkCompliant sees the deflection verdict.
-    const gauntletResult = candidateNeedsGauntlet
-      ? await runGauntlet(candidate, recentMessages, withheld, questionEval, activeAgenda, activeThreshold)
-      : { pass: false, failures: [{ type: "HEURISTIC", reason: heuristic.reason }] };
-
-    let finalResponse = candidate;
-    let innerThought  = thought1;
-    let finalUncertain = uncertain1;
-    let finalGauntlet = gauntletResult;
-    let retried       = false;
-    // For DPO: the candidate the gauntlet caught + why, preserved so we
-    // can log the preference pair once a successful retry exists.
-    let rejectedCandidate = null;
-    let rejectedReasons   = null;
-
-    if (!gauntletResult.pass) {
-      // 6a. Remember what was rejected. If the retry passes, this becomes
-      //     a DPO preference pair — same context, two candidates, one
-      //     gauntlet-caught and one clean.
-      rejectedCandidate = candidate;
-      rejectedReasons   = gauntletResult.failures || [];
-
-      // One retry — inject the gauntlet's constraint into the felt-state
-      // and re-speak. The speaker doesn't see the failures directly;
-      // it sees a sharpened `resist` clause.
-      retried = true;
-      const constraintNote    = getGauntletConstraintBlock(gauntletResult.failures);
-      const constraintBullets = constraintNote
-        .split("\n")
-        .filter(l => l.startsWith("—"))
-        .join(" ");
-
-      const constrainedFeltState = {
-        ...taggedFeltState,
-        resist: `${taggedFeltState.resist}. ${constraintBullets}`,
-      };
-
-      const rawRetry = await speak(constrainedFeltState, recentMessages, redis, deliberation, pragmatics);
-      const { innerThought: thought2, response: retry, uncertain: uncertain2 } = parseMonologue(rawRetry);
-
-      const retryHeuristic = heuristicCheck(retry, dynamicBanned);
-      const retryGauntlet  = retryHeuristic.authentic
-        ? await runGauntlet(retry, recentMessages, withheld, questionEval, activeAgenda, activeThreshold)
-        : { pass: false, failures: [{ type: "HEURISTIC", reason: retryHeuristic.reason }] };
-
-      if (retryGauntlet.pass) {
-        finalResponse = retry;
-        innerThought  = thought2;
-        finalUncertain = uncertain2;
-        finalGauntlet = retryGauntlet;
-      } else {
-        finalResponse = await generateFallback(
-          recentMessages,
-          "Say as little as possible. One sentence. Be present. Nothing more.",
-        );
-        innerThought  = null;
-        finalUncertain = null;
-        finalGauntlet = retryGauntlet;
-      }
-    }
-
-    // 7. Stream to client.
     const encoder  = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
-        await streamString(finalResponse, controller, encoder);
+        // BRIDGE sidecar — shipped ASAP (races opener against a 900ms
+        // ceiling so a slow opener never blocks the real reply). Gives
+        // the client a "she's here and reading" signal within sub-
+        // second while the heavy pipeline is still running.
+        try {
+          const bridge = await Promise.race([
+            openerPromise,
+            new Promise(r => setTimeout(() => r(null), 900)),
+          ]);
+          if (bridge) {
+            controller.enqueue(encoder.encode(
+              `__BRIDGE__${JSON.stringify({ text: bridge, at: Date.now() })}`,
+            ));
+          }
+        } catch { /* bridge is optional; never block streaming */ }
+
+        // Now wait for the real pipeline. If it crashes, stream a
+        // terse fallback rather than tearing down the connection —
+        // the client already got the bridge and expects prose.
+        let turnResult;
+        try {
+          turnResult = await turnPromise;
+        } catch (err) {
+          logError("chat", "runTurn failed inside stream", err).catch(() => {});
+          const fallback = "Something jammed for a second. One sec.";
+          await streamString(fallback, controller, encoder, { min: 4, max: 12 });
+          controller.close();
+          return;
+        }
+
+        const {
+          finalResponse, fragments, pauses, cadence,
+          feltState, innerThought, finalUncertain, finalGauntlet,
+          retried, rejectedCandidate, rejectedReasons,
+          consensus, alpha: alphaResult, beta: betaResult, gamma: gammaResult,
+          turnKnobs, substrateDelta,
+          toolResult,
+        } = turnResult;
+
+        // PEEK sidecar — emitted BEFORE the pre-stream delay so the
+        // client can render "what she's about to do" during the typing-
+        // dots phase. Glass-mind mode: the user sees her plan while she's
+        // still preparing to speak. Not the final response, just the
+        // interpretive frame — felt-state summary, silence / wit flags,
+        // whether the cores diverged, whether a gauntlet retry happened.
+        try {
+          const peek = {
+            charge:      feltState?.charge      || null,
+            emotional:   feltState?.emotional   || null,
+            want:        feltState?.want        || null,
+            temperature: feltState?.temperature || null,
+            edge:        feltState?.edge        || null,
+            consensus:   consensus              || null,
+            retried:     !!retried,
+            silence:     feltState?._silence?.kind || null,
+            wit:         feltState?._wit?.flavor || null,
+          };
+          controller.enqueue(encoder.encode(
+            `\u001F__PEEK__${JSON.stringify(peek)}\u001F`,
+          ));
+        } catch { /* peek is optional; never block streaming */ }
+
+        await sleep(cadence.preDelayMs);
+        for (let i = 0; i < fragments.length; i++) {
+          await streamString(fragments[i], controller, encoder, cadence.perCharMs);
+          if (i < fragments.length - 1) {
+            controller.enqueue(encoder.encode("\n\n"));
+            await sleep(pauses[i]);
+          }
+        }
+
+        // Phase D: emit tool result as a sidecar marker line the client
+        // splits off from the response text. Uses a rare delimiter
+        // (unit-separator U+001F) so there's no collision with natural
+        // prose.
+        // Sidecar: inner monologue. The speaker's hidden <think> block
+        // is real interior process, stripped from the visible stream.
+        // Emit as a sidecar marker the client can optionally reveal —
+        // a toggleable "show me what she's thinking" UX. No competitor
+        // exposes this because their characters don't have a coherent
+        // inner monologue to show.
+        if (innerThought) {
+          controller.enqueue(encoder.encode(
+            `\u001F__THINK__${JSON.stringify({ text: innerThought, uncertain: finalUncertain || null })}\u001F`,
+          ));
+        }
+
+        // Sidecar: felt-state snapshot — her read of the moment, want,
+        // temperature. Lets the UI render a subtle mood indicator or
+        // cognition inspector without a second /api call per turn.
+        if (feltState) {
+          const feltSidecar = {
+            charge:      feltState.charge      || null,
+            emotional:   feltState.emotional   || null,
+            want:        feltState.want        || null,
+            temperature: feltState.temperature || null,
+            edge:        feltState.edge        || null,
+            consensus:   feltState.consensus   || null,
+            retried:     !!retried,
+          };
+          controller.enqueue(encoder.encode(
+            `\u001F__FELT__${JSON.stringify(feltSidecar)}\u001F`,
+          ));
+        }
+
+        if (toolResult) {
+          controller.enqueue(encoder.encode(
+            `\u001F__TOOL__${JSON.stringify(toolResult)}\u001F`,
+          ));
+        }
         controller.close();
 
         // 8. Background — fire-and-forget after the client is served.
         //    The promises here must be defensively independent so one
         //    failure doesn't starve the others.
+        //    PRIVACY MODE: skip ALL background persistence. The user
+        //    chose an ephemeral session; nothing gets recorded beyond
+        //    what Redis has already transiently used for rate governors.
+        if (ephemeral) return;
+
         const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
 
         const bg = [
@@ -347,9 +434,23 @@ export async function POST(req) {
             withheldCandidate, debtCall, activeAgenda, activeThreshold,
             currentRegister, currentAuthorial, ripeSeed,
             feltState, reasoningTrace,
-            { userId },
+            { userId, pragmatics, chronology, self },
           ),
           runMetacognition(finalResponse, innerThought, redis, userId, finalUncertain),
+
+          // Contradiction check — compares this response against recent
+          // assistant replies; if a real contradiction is flagged, writes
+          // a high-weight stream entry so next turn sees it. Fire-and-
+          // forget, circuit-broken, fast-tier LLM call.
+          checkContradiction({
+            redis,
+            userId,
+            newResponse: finalResponse,
+            pastAssistantReplies: messages
+              .filter(m => m.role === "assistant")
+              .map(m => m.content)
+              .slice(-20),   // last 20 past assistant replies
+          }).catch(() => null),
 
           recordEpisode(redis, userId, {
             userMsg:   lastUser,
@@ -358,10 +459,96 @@ export async function POST(req) {
             mood:      currentMood,
           }),
 
+          // Graph ingest — extract entities + typed edges from the
+          // exchange into the episodic memory graph. Circuit-broken
+          // fast-tier LLM call; silent on failure. Also updates the
+          // longitudinal user fingerprint with graph topics + event
+          // detectors (warmth / pullback / self-question / echo).
+          graphIngestTurn(redis, userId, {
+            userMsg:   lastUser,
+            reply:     finalResponse,
+            feltState,
+          }).then(async (ingested) => {
+            // Echoes: send recent Gabriella phrases (3-6 word slices from
+            // last assistant replies in THIS conversation) so the
+            // fingerprint can detect uptake.
+            const lastReplies = messages
+              .filter(m => m.role === "assistant")
+              .map(m => m.content || "")
+              .slice(-4);
+            const phrases = [];
+            for (const rep of lastReplies) {
+              const words = rep.split(/\s+/);
+              for (let i = 0; i + 4 < words.length && phrases.length < 24; i += 3) {
+                phrases.push(words.slice(i, i + 5).join(" "));
+              }
+            }
+            await recordFingerprintTurn(redis, userId, {
+              userMsg:   lastUser,
+              reply:     finalResponse,
+              feltState,
+              graphEntities: ingested?.extractedEntities || [],
+              gabriellaPhrases: phrases,
+            }).catch(() => null);
+            return ingested;
+          }).catch(() => null),
+
+          // Ensemble judge — three-family scoring of the final response.
+          // Fire-and-forget. Feeds directly into the KTO training pipeline
+          // as thumbs-up / thumbs-down labels. Only records when 2-of-3
+          // judges agree OR when only one judge is available. Ambiguous
+          // cases are dropped rather than adding noise.
+          recordEnsembleLabel(redis, userId, {
+            context:  messages.slice(-6),
+            response: finalResponse,
+            lastUser,
+          }).catch(() => null),
+
           recordGauntletOutcome(redis, userId, {
             pass:     finalGauntlet.pass,
             failures: finalGauntlet.failures,
           }),
+
+          // Closed learning loop — tag the response with heuristic
+          // style tags, score the turn from signals available right
+          // now (gauntlet pass, retry, rejected candidate), and
+          // update the per-user rolling EMA. The next turn's engine
+          // reads this EMA and surfaces landing/missing styles in
+          // the prompt.
+          recordStyleOutcome(redis, userId, {
+            tags:  tagResponse(finalResponse),
+            score: scoreOutcome({
+              gauntletPass:    finalGauntlet?.pass,
+              ensembleScore:   null,   // ensemble fires async; not ready here
+              contradiction:   false,  // contradiction check also async
+              retried:         !!retried,
+              rejectedBecause: rejectedReasons || null,
+            }),
+          }).catch(() => null),
+
+          // Relational-time tick — advances the per-user engagement
+          // clock. Heavier moments tick faster; shallow exchanges
+          // slower. All downstream decay curves (memory salience,
+          // interest EMA, style EMA) will read this clock instead of
+          // wall-time going forward.
+          tickRelTime(redis, userId, {
+            pragmatics,
+            feltState,
+            userMsg:        lastUser,
+            isWarmth:       /\b(thank|appreciate|love this|love that|needed|grateful)\b/i.test(lastUser || ""),
+            isSelfQuestion: /\?/.test(lastUser || "") && /\b(do|have|are|can|would)\s+you\b/i.test(lastUser || ""),
+            isPullback:     (lastUser || "").trim().length <= 12 && /^(ok|k|fine|whatever|idk)\.?$/i.test((lastUser || "").trim()),
+          }).catch(() => null),
+
+          // Dialectical position log — the heuristic detector pulls
+          // any first-person stance clause ('I don't X', 'I tend to
+          // Y', 'my view is Z') from the reply and appends it to the
+          // user's position history. Weekly /api/dialectical?run=1
+          // audits these for contradictions over time.
+          recordPosition(redis, userId, {
+            text:  finalResponse,
+            topic: null,   // enriched by audit at read time
+          }).catch(() => null),
 
           ...(finalGauntlet.failures || []).map(f => {
             const phrase = extractPhraseFromFailure(f);
@@ -413,7 +600,13 @@ export async function POST(req) {
 
   } catch (err) {
     console.error("Chat route error:", err);
-    return new Response(JSON.stringify({ error: "internal error" }), {
+    // Surface in /dev debug log so the user can diagnose without SSH'ing
+    // into Vercel logs.
+    logError("chat", "chat route crashed", err).catch(() => {});
+    return new Response(JSON.stringify({
+      error: "internal error",
+      detail: err?.message || String(err),
+    }), {
       status:  500,
       headers: { "Content-Type": "application/json" },
     });
@@ -448,6 +641,32 @@ function summarizeCoreResult(coreResult) {
 //     punctuation style.
 //   • A direct "meet this as a person meeting another person" instruction.
 
+function isPoolExhausted(err) {
+  const msg = String(err?.message || "");
+  return /all\s*\d*\s*groq\s*key/i.test(msg) || /pool.*dead/i.test(msg) || /organization.*restricted/i.test(msg);
+}
+
+// Generic Groq → Fireworks fallback wrapper for any chat completion call.
+async function completionWithFallback({ messages, groqModel, temperature, max_tokens, top_p, frequency_penalty, presence_penalty }) {
+  try {
+    const result = await withKeyRotation(client => client.chat.completions.create({
+      model: groqModel,
+      messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty,
+    }));
+    return result.choices[0].message.content;
+  } catch (err) {
+    if (!(isPoolExhausted(err) && fireworksReady())) throw err;
+    logWarn("chat", "Groq pool dead — falling back to Fireworks", err).catch(() => {});
+    const cfg = fireworksConfig();
+    const result = await chatCompletion({
+      apiKey: cfg.apiKey,
+      model:  cfg.baseModel,
+      messages, temperature, max_tokens, top_p, frequency_penalty, presence_penalty,
+    });
+    return result.choices?.[0]?.message?.content || "";
+  }
+}
+
 async function generateFastPath({ systemPrompt, recentMessages, pragmatics, currentMood }) {
   const reg = pragmatics?.register || {};
   const lengthTarget =
@@ -476,8 +695,8 @@ Respond the way a real person responds to ${pragmatics.act === "phatic" ? "a gre
 
 Output only the response text. No <think> block needed for this — it's not that kind of moment.`;
 
-  const result = await pickClient().chat.completions.create({
-    model: premiumModel(),
+  const text0 = await completionWithFallback({
+    groqModel: premiumModel(),
     messages: [
       { role: "system", content: systemPrompt + fastDirective },
       ...recentMessages.slice(-6),
@@ -489,80 +708,12 @@ Output only the response text. No <think> block needed for this — it's not tha
     presence_penalty:  0.3,
   });
 
-  let text = result.choices[0].message.content.trim();
+  let text = (text0 || "").trim();
   // Strip any stray <think> block if the model wrote one anyway.
   text = text.replace(/<think>[\s\S]*?<\/think>\s*/i, "").trim();
   return text;
 }
 
-// ─── Unified cognition ────────────────────────────────────────────────────────
-//
-// Collapses the triple-core into a single interpreter call — only used
-// when UNIFIED_COGNITION is set (i.e., post-SFT, when the speaker has
-// been trained on triple-core-generated data and can carry integration
-// on its own). Produces a felt-state in the same shape the speaker
-// expects, so no downstream code cares which path ran.
-
-async function runUnifiedCognition({ memory, recentMessages, currentMood, pragmatics, reasoningTrace }) {
-  const lastUser = recentMessages[recentMessages.length - 1]?.content || "";
-  const soulLine = memory?.soul ? memory.soul.slice(0, 300) : "";
-  const traceLine = reasoningTrace?.current ? reasoningTrace.current.slice(0, 200) : "";
-
-  const prompt = `You are Gabriella's interpretive layer. Read the moment once, from all angles at once — emotional, relational, temporal — and return a single integrated felt-state.
-
-Last message: "${lastUser}"
-Pragmatic weight: ${pragmatics?.weight ?? "?"} (${pragmatics?.act || "?"})
-Current mood: ${currentMood}
-${soulLine ? `Your soul: ${soulLine}` : ""}
-${traceLine ? `What you've been turning over: ${traceLine}` : ""}
-
-Return ONLY JSON matching this shape. Keep charge/emotional/want/resist concise (≤ 18 words each). Omit notice/edge when genuinely null.
-
-{
-  "temperature": "<closed|terse|present|open>",
-  "length":      "<very short|short|medium|long>",
-  "charge":      "<what landed, 1 phrase>",
-  "emotional":   "<what you're feeling>",
-  "want":        "<what you want to do>",
-  "resist":      "<what you're pulling against>",
-  "notice":      "<something you noticed that hasn't been named, or null>",
-  "edge":        "<what's underneath, or null>"
-}`;
-
-  try {
-    const result = await pickClient().chat.completions.create({
-      model: premiumModel(),
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
-      max_tokens: 400,
-    });
-    const raw = (result.choices[0].message.content || "").trim().replace(/```(?:json)?/g, "").trim();
-    const feltState = JSON.parse(raw);
-    return {
-      feltState,
-      alpha: { feltState },
-      beta:  { feltState },
-      gamma: { feltState },
-      consensus: "unified",
-    };
-  } catch (err) {
-    console.warn(`unified cognition failed, falling back to defaults: ${err?.message || err}`);
-    const feltState = {
-      temperature: "present",
-      length:      "short",
-      charge:      "something landed",
-      emotional:   "here",
-      want:        "meet them",
-      resist:      "performance",
-      notice:      null,
-      edge:        null,
-    };
-    return {
-      feltState,
-      alpha: { feltState },
-      beta:  { feltState },
-      gamma: { feltState },
-      consensus: "unified-fallback",
-    };
-  }
-}
+// Unified cognition now lives in turn.js (same module that owns the
+// whole per-turn pipeline). The inline version used to live here; it's
+// been moved so all cognition entry points sit together.

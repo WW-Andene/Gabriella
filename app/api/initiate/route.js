@@ -21,6 +21,7 @@ import { loadNarrative }     from "../../../lib/gabriella/narrative.js";
 import { recentFeltStates }  from "../../../lib/gabriella/episodic.js";
 import { listActiveUsers }   from "../../../lib/gabriella/users.js";
 import { generateInitiation } from "../../../lib/gabriella/initiation.js";
+import { drainDueScheduledThoughts } from "../../../lib/gabriella/tools.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -38,6 +39,12 @@ export async function GET(req) {
     const users = await listActiveUsers(redis, { withinMs: 14 * 24 * 60 * 60 * 1000 });
 
     const results = await Promise.allSettled(users.map(async (userId) => {
+      // Sweep due scheduled thoughts FIRST — these are explicit user-
+      // requested reminders set via the `remind` tool. They don't need
+      // LLM-generated initiations, they're already-written messages
+      // the user told Gabriella to resurface at a specific time.
+      const drained = await drainDueScheduledThoughts(redis, userId).catch(() => ({ drained: 0 }));
+
       const [memory, chronology, person, narrative, recentFs] = await Promise.all([
         loadMemory(redis, userId).catch(() => ({})),
         loadChronology(redis, userId).catch(() => null),
@@ -50,7 +57,7 @@ export async function GET(req) {
         memory, narrative, person, chronology, recentFs,
       });
 
-      return { userId, outcome };
+      return { userId, outcome, remindersDrained: drained.drained };
     }));
 
     const summary = results.map(r => r.status === "fulfilled" ? r.value : { error: r.reason?.message || String(r.reason) });
