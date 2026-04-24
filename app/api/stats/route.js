@@ -30,6 +30,7 @@ import { loadAuditStats } from "../../../lib/gabriella/callAudit.js";
 import { loadMetaRegister } from "../../../lib/gabriella/metaregister.js";
 import { graphStats } from "../../../lib/gabriella/graph.js";
 import { blindEvalStats } from "../../../lib/gabriella/blindEval.js";
+import { skipListStats }  from "../../../lib/gabriella/deadBlockPrune.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -271,6 +272,11 @@ export async function GET(req) {
     try { blindEval = await blindEvalStats(redis); }
     catch { /* ignore */ }
 
+    // ─── Dead-block auto-prune — which slots are currently being skipped ──
+    let skipList = null;
+    try { skipList = await skipListStats(redis, userId); }
+    catch { /* ignore */ }
+
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
     // loaded? A deploy without keys will have gaping holes here.
@@ -303,6 +309,7 @@ export async function GET(req) {
       blocksAudit,
       graph,
       blindEval,
+      skipList,
       gauntlet: gauntletStats,
       readiness,
     };
