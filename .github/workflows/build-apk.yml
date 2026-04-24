@@ -111,18 +111,29 @@ jobs:
           console.log("Patched twa-manifest.json for host=" + host);
           NODE
 
-      - name: Wait for production manifest to be reachable
+      - name: Wait for production manifest to be reachable AND valid JSON
         run: |
           HOST="${{ steps.inputs.outputs.host }}"
+          URL="https://${HOST}/manifest.webmanifest"
           for i in $(seq 1 10); do
-            if curl -sf "https://${HOST}/manifest.webmanifest" > /dev/null; then
-              echo "Manifest reachable"
-              exit 0
+            BODY=$(curl -sf "$URL" || true)
+            if [ -n "$BODY" ]; then
+              # Must be JSON (starts with `{`) and parse cleanly. If Next.js
+              # is serving a 200-HTML error page (as happened on the first
+              # failing CI run), bubblewrap crashes with "Unexpected token
+              # '<', '<!doctype'" — cheaper to fail here with a clearer
+              # message.
+              if printf '%s' "$BODY" | node -e "let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ const j=JSON.parse(d); if(!j.name) process.exit(2); console.log('manifest ok — name=', j.name); }catch(e){ console.error('manifest not valid JSON:', e.message); process.exit(3); } })"; then
+                exit 0
+              fi
+              echo "Attempt $i: manifest reachable but not valid JSON (got $(echo "$BODY" | head -c 80)…). Sleeping 6s" >&2
+            else
+              echo "Attempt $i: manifest URL not reachable; sleeping 6s"
             fi
-            echo "Attempt $i: manifest not reachable yet; sleeping 6s"
             sleep 6
           done
-          echo "Manifest never became reachable at https://${HOST}/manifest.webmanifest" >&2
+          echo "Manifest never became valid JSON at $URL" >&2
+          curl -sv "$URL" 2>&1 | head -40 >&2 || true
           exit 1
 
       - name: Resolve or generate signing keystore

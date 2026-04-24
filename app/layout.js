@@ -3,7 +3,6 @@ import "./globals.css";
 export const metadata = {
   title:       "Gabriella",
   description: "A chat interface with memory, presence, and interiority.",
-  manifest:    "/manifest.webmanifest",
   applicationName: "Gabriella",
   appleWebApp: {
     capable:           true,
