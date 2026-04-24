@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/self-eval.js
 //
-// Self-play evaluation harness. Scout interviews Gabriella with a fixed
+// Self-play evaluation harness. Maverick interviews Gabriella with a fixed
 // set of calibration scenarios, scores each reply along multiple axes,
 // and writes a report + a feed-back queue of low-scoring exchanges that
 // can be ingested as DPO rejected-candidates on the next learning cycle.

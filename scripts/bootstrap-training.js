@@ -1,5 +1,5 @@
 // scripts/bootstrap-training.js
-// Generate synthetic Gabriella training data using Scout as teacher.
+// Generate synthetic Gabriella training data using Maverick as teacher.
 //
 // Usage:
 //   npm run bootstrap-training
