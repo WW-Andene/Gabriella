@@ -141,6 +141,7 @@ export async function POST(req) {
       narrative,
       trajectory,
       phase,
+      self,
     } = await buildGabriella(messages, { userId });
 
     // 2. Load withheld items and dynamic banned phrases in parallel.
@@ -214,7 +215,7 @@ export async function POST(req) {
               withheldCandidate, debtCall, activeAgenda, activeThreshold,
               currentRegister, currentAuthorial, ripeSeed,
               null, reasoningTrace,
-              { userId, pragmatics, chronology },
+              { userId, pragmatics, chronology, self },
             ),
             recordEpisode(redis, userId, {
               userMsg:   lastUser,
@@ -303,7 +304,7 @@ export async function POST(req) {
             withheldCandidate, debtCall, activeAgenda, activeThreshold,
             currentRegister, currentAuthorial, ripeSeed,
             feltState, reasoningTrace,
-            { userId, pragmatics, chronology },
+            { userId, pragmatics, chronology, self },
           ),
           runMetacognition(finalResponse, innerThought, redis, userId, finalUncertain),
 
