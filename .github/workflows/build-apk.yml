@@ -150,9 +150,59 @@ jobs:
           }
           JSON
           # Generate solid-colour PNG placeholders at the advertised sizes.
-          # ImageMagick is preinstalled on ubuntu-latest.
-          convert -size 192x192 xc:"#08080f" pwa-serve/icon-192.png
-          convert -size 512x512 xc:"#08080f" pwa-serve/icon-512.png
+          # We use a tiny pure-Node encoder (zlib is built-in) so the build
+          # has no external image-tool dependency — current ubuntu-latest
+          # runners no longer ship ImageMagick's `convert` on PATH.
+          node - <<'NODE'
+          const fs = require("fs");
+          const zlib = require("zlib");
+          function crc32(buf) {
+            let c, table = [];
+            for (let n = 0; n < 256; n++) {
+              c = n;
+              for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+              table[n] = c >>> 0;
+            }
+            let crc = 0xffffffff;
+            for (let i = 0; i < buf.length; i++) crc = (table[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
+            return (crc ^ 0xffffffff) >>> 0;
+          }
+          function chunk(type, data) {
+            const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+            const typeBuf = Buffer.from(type, "ascii");
+            const crcBuf = Buffer.alloc(4);
+            crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+            return Buffer.concat([len, typeBuf, data, crcBuf]);
+          }
+          function solidPng(size, r, g, b) {
+            const sig = Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
+            const ihdr = Buffer.alloc(13);
+            ihdr.writeUInt32BE(size, 0);
+            ihdr.writeUInt32BE(size, 4);
+            ihdr[8] = 8;   // bit depth
+            ihdr[9] = 2;   // color type: truecolor RGB
+            ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+            // Raw scanlines: 1-byte filter (0) + size*3 bytes of RGB per row
+            const row = Buffer.alloc(1 + size * 3);
+            row[0] = 0;
+            for (let x = 0; x < size; x++) {
+              row[1 + x * 3 + 0] = r;
+              row[1 + x * 3 + 1] = g;
+              row[1 + x * 3 + 2] = b;
+            }
+            const raw = Buffer.concat(new Array(size).fill(row));
+            const idat = zlib.deflateSync(raw);
+            return Buffer.concat([
+              sig,
+              chunk("IHDR", ihdr),
+              chunk("IDAT", idat),
+              chunk("IEND", Buffer.alloc(0)),
+            ]);
+          }
+          const [r, g, b] = [0x08, 0x08, 0x0f];
+          fs.writeFileSync("pwa-serve/icon-192.png", solidPng(192, r, g, b));
+          fs.writeFileSync("pwa-serve/icon-512.png", solidPng(512, r, g, b));
+          NODE
           ls -la pwa-serve
           # Background HTTP server on :8080
           cd pwa-serve
