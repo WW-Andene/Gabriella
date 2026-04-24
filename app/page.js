@@ -316,11 +316,19 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Inner-life reveal toggle — makes her <think> block and felt-state
-              visible to the user when on. Unique to Gabriella; no competitor
-              character product exposes its interpretive layer at inference. */}
-          <button
-            onClick={() => setShowInner(v => !v)}
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            {/* Minimal cross-surface nav — lets a visitor discover the
+                transparency features. Small + unobtrusive; textual; matches
+                the header weight so it doesn't pull attention from the chat. */}
+            <a href="/retro" style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>retro</a>
+            <a href="/stats" style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>stats</a>
+            <a href="/meet"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>about</a>
+
+            {/* Inner-life reveal toggle — makes her <think> block and felt-state
+                visible to the user when on. Unique to Gabriella; no competitor
+                character product exposes its interpretive layer at inference. */}
+            <button
+              onClick={() => setShowInner(v => !v)}
             title={showInner ? "hide her inner monologue" : "reveal her inner monologue"}
             style={{
               background: showInner ? "rgba(255,175,70,0.14)" : "rgba(255,255,255,0.04)",
@@ -334,9 +342,10 @@ export default function Home() {
               transition: "all 0.2s ease",
               fontFamily: "inherit",
             }}
-          >
-            {showInner ? "◐ inner" : "○ inner"}
-          </button>
+            >
+              {showInner ? "◐ inner" : "○ inner"}
+            </button>
+          </div>
         </div>
 
         {/* Inner-life panel — shows only when toggle is on AND we have data
