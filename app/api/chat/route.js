@@ -47,6 +47,7 @@ import { computeCadence, sleep }                            from "../../../lib/g
 import { premiumModel }                                     from "../../../lib/gabriella/models.js";
 import { runTurn }                                          from "../../../lib/gabriella/turn.js";
 import { speculativeOpener, warmPrefix }                    from "../../../lib/gabriella/ttft.js";
+import { ingestTurn as graphIngestTurn }                   from "../../../lib/gabriella/graph.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -453,6 +454,15 @@ export async function POST(req) {
             feltState,
             mood:      currentMood,
           }),
+
+          // Graph ingest — extract entities + typed edges from the
+          // exchange into the episodic memory graph. Circuit-broken
+          // fast-tier LLM call; silent on failure.
+          graphIngestTurn(redis, userId, {
+            userMsg:   lastUser,
+            reply:     finalResponse,
+            feltState,
+          }).catch(() => null),
 
           // Ensemble judge — three-family scoring of the final response.
           // Fire-and-forget. Feeds directly into the KTO training pipeline
