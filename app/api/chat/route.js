@@ -49,6 +49,7 @@ import { runTurn }                                          from "../../../lib/g
 import { speculativeOpener, warmPrefix }                    from "../../../lib/gabriella/ttft.js";
 import { ingestTurn as graphIngestTurn }                   from "../../../lib/gabriella/graph.js";
 import { recordFingerprintTurn }                           from "../../../lib/gabriella/userFingerprint.js";
+import { tagResponse, scoreOutcome, recordStyleOutcome }   from "../../../lib/gabriella/learningLoop.js";
 
 // Vercel function configuration.
 // The chat route fires up to ~30 LLM calls per exchange. The default
@@ -505,6 +506,23 @@ export async function POST(req) {
             pass:     finalGauntlet.pass,
             failures: finalGauntlet.failures,
           }),
+
+          // Closed learning loop — tag the response with heuristic
+          // style tags, score the turn from signals available right
+          // now (gauntlet pass, retry, rejected candidate), and
+          // update the per-user rolling EMA. The next turn's engine
+          // reads this EMA and surfaces landing/missing styles in
+          // the prompt.
+          recordStyleOutcome(redis, userId, {
+            tags:  tagResponse(finalResponse),
+            score: scoreOutcome({
+              gauntletPass:    finalGauntlet?.pass,
+              ensembleScore:   null,   // ensemble fires async; not ready here
+              contradiction:   false,  // contradiction check also async
+              retried:         !!retried,
+              rejectedBecause: rejectedReasons || null,
+            }),
+          }).catch(() => null),
 
           ...(finalGauntlet.failures || []).map(f => {
             const phrase = extractPhraseFromFailure(f);
