@@ -320,9 +320,10 @@ export default function Home() {
             {/* Minimal cross-surface nav — lets a visitor discover the
                 transparency features. Small + unobtrusive; textual; matches
                 the header weight so it doesn't pull attention from the chat. */}
-            <a href="/retro" style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>retro</a>
-            <a href="/stats" style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>stats</a>
-            <a href="/meet"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>about</a>
+            <a href="/retro"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>retro</a>
+            <a href="/memory" style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>memory</a>
+            <a href="/stats"  style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>stats</a>
+            <a href="/meet"   style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", textDecoration: "none", letterSpacing: "0.04em" }}>about</a>
 
             {/* Inner-life reveal toggle — makes her <think> block and felt-state
                 visible to the user when on. Unique to Gabriella; no competitor
