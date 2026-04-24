@@ -61,6 +61,22 @@ export default function MemoryPage() {
     finally { setBusy(false); }
   };
 
+  const deleteStreamEntry = async (id) => {
+    if (!confirm("Delete this thought from her stream?")) return;
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch("/api/memory", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "stream", id }),
+      });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || "delete failed");
+      await load();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+
   const wipeAll = async () => {
     if (wipeStage === 0) { setWipeStage(1); return; }
     setBusy(true); setError(null);
@@ -79,7 +95,7 @@ export default function MemoryPage() {
   }
 
   const isEmpty = data
-    && !(data.facts?.length || data.imprints?.length || data.threads?.length || data.pinned?.length || data.summary);
+    && !(data.facts?.length || data.imprints?.length || data.threads?.length || data.pinned?.length || data.summary || data.stream?.length);
 
   return (
     <div style={css.shell}>
@@ -163,6 +179,43 @@ export default function MemoryPage() {
                 <div key={i} style={css.row}>
                   <div style={css.rowText}>{typeof p === "string" ? p : (p.text || p.content || JSON.stringify(p))}</div>
                   <button onClick={() => deleteOne("pinned", i)} disabled={busy} style={css.del}>delete</button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {data?.stream?.length > 0 && (
+          <>
+            <h2 style={css.h2}>Her inner stream ({data.stream.length})</h2>
+            <div style={css.card}>
+              <p style={{ ...css.quiet, margin: "0 0 10px", fontSize: 12 }}>
+                The log of things she's been thinking between your turns: thoughts, predictions
+                about you, connections she noticed, surprises, re-readings. Delete anything you'd
+                rather she forget.
+              </p>
+              {data.stream.map((e) => (
+                <div key={e.id || `${e.at}-${e.kind}`} style={css.row}>
+                  <div style={css.rowText}>
+                    <span style={{
+                      display: "inline-block",
+                      fontSize: 10,
+                      letterSpacing: 0.8,
+                      textTransform: "uppercase",
+                      padding: "1px 6px",
+                      borderRadius: 3,
+                      background: "#22222e",
+                      color: "#a0a0b0",
+                      marginRight: 8,
+                      fontWeight: 600,
+                    }}>{e.kind}</span>
+                    {e.content}
+                  </div>
+                  <button
+                    onClick={() => deleteStreamEntry(e.id)}
+                    disabled={busy || !e.id}
+                    style={css.del}
+                  >delete</button>
                 </div>
               ))}
             </div>

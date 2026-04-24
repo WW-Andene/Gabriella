@@ -19,6 +19,7 @@ export const maxDuration = 20;
 
 import { Redis } from "@upstash/redis";
 import { resolveUserId } from "../../../lib/gabriella/users.js";
+import { readStream } from "../../../lib/gabriella/stream.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -51,6 +52,12 @@ export async function GET(req) {
       ? (typeof pinnedRaw === "string" ? JSON.parse(pinnedRaw) : pinnedRaw)
       : [];
 
+    // Stream entries — her inner-life log, inspectable and deletable
+    // the same way facts / imprints are. Users can see what she's been
+    // thinking between their turns and remove entries they'd rather she
+    // forget. No other AI companion exposes this.
+    const streamEntries = await readStream(redis, userId, { limit: 40 }).catch(() => []);
+
     return new Response(JSON.stringify({
       ok: true,
       userId,
@@ -59,6 +66,13 @@ export async function GET(req) {
       threads:  splitFacts(threads),
       summary:  typeof summary === "string" ? summary : null,
       pinned:   Array.isArray(pinned) ? pinned : [],
+      stream:   streamEntries.map(e => ({
+        id:      e.id,
+        kind:    e.kind,
+        content: e.content,
+        at:      e.at,
+        weight:  e.weight,
+      })),
     }, null, 2), { headers: { "Content-Type": "application/json" } });
   } catch (err) {
     return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
@@ -149,6 +163,40 @@ export async function DELETE(req) {
       imprints: `${userId}:imprints`,
       threads:  `${userId}:threads`,
     };
+
+    if (kind === "stream") {
+      // Stream entries are list items with embedded ids. Filter by id
+      // rather than position because the list changes often (new
+      // entries pushed, old ones pruned).
+      const entryId = body?.id;
+      if (!entryId || typeof entryId !== "string") {
+        return new Response(JSON.stringify({ ok: false, error: "stream delete needs {id}" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const all = await redis.lrange(`${userId}:stream`, 0, 79).catch(() => []);
+      const kept = [];
+      let removed = false;
+      for (const raw of all) {
+        try {
+          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+          if (parsed?.id === entryId) { removed = true; continue; }
+          kept.push(typeof raw === "string" ? raw : JSON.stringify(raw));
+        } catch { kept.push(raw); }
+      }
+      if (!removed) {
+        return new Response(JSON.stringify({ ok: false, error: "stream id not found" }), {
+          status: 404, headers: { "Content-Type": "application/json" },
+        });
+      }
+      await redis.del(`${userId}:stream`);
+      for (const entry of kept.slice().reverse()) {
+        await redis.rpush(`${userId}:stream`, entry);
+      }
+      return new Response(JSON.stringify({ ok: true, remaining: kept.length }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     if (kind === "pinned") {
       // Pinned is a JSON array, not \n-delimited.
