@@ -27,7 +27,8 @@
     "push-existing":         "node --env-file=.env.local scripts/push-existing.js",
     "audit":                 "node scripts/audit-tests.js",
     "deploy-check":          "node --env-file=.env.local scripts/deploy-check.js",
-    "deploy-check-remote":   "node --env-file=.env.local scripts/deploy-check.js --url"
+    "deploy-check-remote":   "node --env-file=.env.local scripts/deploy-check.js --url",
+    "test":                  "node tests/pure-modules.test.js"
   },
   "dependencies": {
     "next": "14.2.0",
