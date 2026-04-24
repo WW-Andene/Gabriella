@@ -19,6 +19,8 @@
     "self-eval-quick":       "node --env-file=.env.local scripts/self-eval.js --scenarios 8",
     "eval":                  "node --env-file=.env.local scripts/eval-harness.js",
     "eval-quick":            "node --env-file=.env.local scripts/eval-harness.js --scenarios 10",
+    "expand-seeds":          "node --env-file=.env.local scripts/expand-seeds.js",
+    "expand-seeds-large":    "node --env-file=.env.local scripts/expand-seeds.js --variants 8 --max-rpm 60",
     "refresh-env":           "bash .devcontainer/setup-env.sh",
     "rebuild-env":           "bash .devcontainer/setup-env.sh --force",
     "fireworks-check":       "node --env-file=.env.local scripts/fireworks-check.js",
