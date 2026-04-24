@@ -37,6 +37,7 @@ import { logExchange }                                      from "../../../lib/g
 import { recordEpisode }                                    from "../../../lib/gabriella/episodic.js";
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
+import { recordEnsembleLabel }                              from "../../../lib/gabriella/ensembleJudge.js";
 import { withKeyRotation }                                  from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
 import { logError, logWarn }                                from "../../../lib/gabriella/debugLog.js";
@@ -314,6 +315,17 @@ export async function POST(req) {
             feltState,
             mood:      currentMood,
           }),
+
+          // Ensemble judge — three-family scoring of the final response.
+          // Fire-and-forget. Feeds directly into the KTO training pipeline
+          // as thumbs-up / thumbs-down labels. Only records when 2-of-3
+          // judges agree OR when only one judge is available. Ambiguous
+          // cases are dropped rather than adding noise.
+          recordEnsembleLabel(redis, userId, {
+            context:  messages.slice(-6),
+            response: finalResponse,
+            lastUser,
+          }).catch(() => null),
 
           recordGauntletOutcome(redis, userId, {
             pass:     finalGauntlet.pass,
