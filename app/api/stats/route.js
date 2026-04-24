@@ -27,6 +27,7 @@ import { poolStats } from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId } from "../../../lib/gabriella/users.js";
 import { breakerStates } from "../../../lib/gabriella/circuitBreaker.js";
 import { loadAuditStats } from "../../../lib/gabriella/callAudit.js";
+import { loadMetaRegister } from "../../../lib/gabriella/metaregister.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -181,6 +182,9 @@ export async function GET(req) {
     // ─── LLM call audit — today's rollup + last-hour window ──────────────
     const callAudit = await loadAuditStats(redis);
 
+    // ─── Gauntlet stats — per-check rejection distribution ──────────────
+    const gauntletStats = await loadMetaRegister(redis, userId).catch(() => null);
+
     // ─── Flags for evaluators ─────────────────────────────────────────────
     // Quick-glance readiness signals — are the high-value systems actually
     // loaded? A deploy without keys will have gaping holes here.
@@ -209,6 +213,7 @@ export async function GET(req) {
       pool,
       breakers,
       callAudit,
+      gauntlet: gauntletStats,
       readiness,
     };
 

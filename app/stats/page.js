@@ -81,7 +81,7 @@ export default function StatsPage() {
   }
   if (!data) return null;
 
-  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, readiness } = data;
+  const { self, stream, memory, training, chronology, eval: evalData, speaker, heartbeats, pool, breakers, callAudit, gauntlet, readiness } = data;
 
   return (
     <div style={css.shell}>
@@ -251,6 +251,38 @@ export default function StatsPage() {
             })
           ) : (
             <div style={{fontSize: 13, color: "#8a8a99"}}>all breakers closed</div>
+          )}
+        </div>
+
+        {/* GAUNTLET OUTCOMES */}
+        <div style={css.card}>
+          <div style={css.cardT}>Gauntlet outcomes ({gauntlet?.sampleSize ?? 0} recent)</div>
+          {gauntlet && gauntlet.sampleSize >= 3 ? (
+            <>
+              <div style={css.kv}>
+                <span style={css.k}>pass rate</span>
+                <span style={css.v}>{gauntlet.passRate != null ? `${Math.round(gauntlet.passRate * 100)}%` : "—"}</span>
+              </div>
+              {gauntlet.topFailure && (
+                <div style={css.kv}>
+                  <span style={css.k}>dominant failure</span>
+                  <span style={css.v}>{gauntlet.topFailure}</span>
+                </div>
+              )}
+              {Object.keys(gauntlet.failureTypes || {}).length > 0 && (
+                <div style={{marginTop: 8}}>
+                  <div style={{fontSize: 10, letterSpacing: 0.8, color: "#8a8a99", textTransform: "uppercase", marginBottom: 4}}>per-check failures</div>
+                  {Object.entries(gauntlet.failureTypes).sort((a,b) => b[1]-a[1]).map(([kind, count]) => (
+                    <div key={kind} style={css.kv}>
+                      <span style={css.k}>{kind}</span>
+                      <span style={css.v}>{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{fontSize: 13, color: "#8a8a99"}}>not enough samples yet (min 3)</div>
           )}
         </div>
 
