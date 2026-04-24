@@ -38,6 +38,7 @@ import { recordEpisode }                                    from "../../../lib/g
 import { recordGauntletOutcome }                            from "../../../lib/gabriella/metaregister.js";
 import { recordPreferencePair }                             from "../../../lib/gabriella/preferences.js";
 import { recordEnsembleLabel }                              from "../../../lib/gabriella/ensembleJudge.js";
+import { checkContradiction }                               from "../../../lib/gabriella/contradiction.js";
 import { withKeyRotation }                                  from "../../../lib/gabriella/groqPool.js";
 import { resolveUserId, registerUser }                      from "../../../lib/gabriella/users.js";
 import { logError, logWarn }                                from "../../../lib/gabriella/debugLog.js";
@@ -361,6 +362,20 @@ export async function POST(req) {
             { userId, pragmatics, chronology, self },
           ),
           runMetacognition(finalResponse, innerThought, redis, userId, finalUncertain),
+
+          // Contradiction check — compares this response against recent
+          // assistant replies; if a real contradiction is flagged, writes
+          // a high-weight stream entry so next turn sees it. Fire-and-
+          // forget, circuit-broken, fast-tier LLM call.
+          checkContradiction({
+            redis,
+            userId,
+            newResponse: finalResponse,
+            pastAssistantReplies: messages
+              .filter(m => m.role === "assistant")
+              .map(m => m.content)
+              .slice(-20),   // last 20 past assistant replies
+          }).catch(() => null),
 
           recordEpisode(redis, userId, {
             userMsg:   lastUser,
