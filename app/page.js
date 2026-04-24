@@ -101,6 +101,50 @@ function extractToolResult(streamText) {
   return { text, tool };
 }
 
+// Thumbs-up / thumbs-down buttons under each assistant bubble. On
+// click, POSTs to /api/feedback with the last ~6 messages of context
+// + this response as training signal. Persists local state so the
+// choice is visible after clicking.
+function FeedbackButtons({ messages, bubbleIndex, content }) {
+  const [state, setState] = useState(null);   // null | "up" | "down" | "sending"
+  const btn = (kind) => ({
+    background: state === kind ? "rgba(255,175,70,0.14)" : "transparent",
+    border: state === kind ? "1px solid rgba(255,175,70,0.4)" : "1px solid rgba(255,255,255,0.08)",
+    color: state === kind ? "rgba(255,220,180,0.9)" : "rgba(255,255,255,0.35)",
+    borderRadius: 12, padding: "2px 8px", fontSize: 10, letterSpacing: "0.04em",
+    cursor: state ? "default" : "pointer", fontFamily: "inherit",
+    marginRight: 4, transition: "all 0.15s",
+  });
+  const submit = async (label) => {
+    if (state) return;
+    setState("sending");
+    try {
+      // Context: up to 6 messages BEFORE this bubble (what she was
+      // responding to).
+      const context = messages.slice(Math.max(0, bubbleIndex - 6), bubbleIndex)
+        .map(m => ({ role: m.role, content: m.content }));
+      if (context.length === 0) {
+        setState(label);
+        return;
+      }
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ context, response: content, label }),
+      });
+      setState(label);
+    } catch {
+      setState(null);
+    }
+  };
+  return (
+    <div style={{ display: "flex", gap: 4, marginTop: 4, marginLeft: 12, opacity: state ? 1 : 0.6 }}>
+      <button onClick={() => submit("up")}   disabled={!!state} style={btn("up")}   title="good reply — feed into training">▲</button>
+      <button onClick={() => submit("down")} disabled={!!state} style={btn("down")} title="off reply — feed into training">▼</button>
+    </div>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages]     = useState([]);
   const [streaming, setStreaming]   = useState("");      // raw streamed text for the current assistant turn
@@ -542,6 +586,13 @@ export default function Home() {
                 {m.streaming && <span className="g-caret" aria-hidden="true" />}
                 {m.tool && <ToolChip tool={m.tool} />}
               </div>
+              {!isUser && !m.streaming && (
+                <FeedbackButtons
+                  messages={messages}
+                  bubbleIndex={i}
+                  content={m.content}
+                />
+              )}
             </div>
           );
         })}
