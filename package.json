@@ -28,6 +28,9 @@
     "audit":                 "node scripts/audit-tests.js",
     "deploy-check":          "node --env-file=.env.local scripts/deploy-check.js",
     "deploy-check-remote":   "node --env-file=.env.local scripts/deploy-check.js --url",
+    "bench":                 "node --env-file=.env.local scripts/integration-bench.js",
+    "bench-remote":          "node --env-file=.env.local scripts/integration-bench.js --base https://gabriella.vercel.app",
+    "bench-seed-blind":      "node --env-file=.env.local scripts/integration-bench.js --seed-blind",
     "test":                  "node tests/pure-modules.test.js"
   },
   "dependencies": {
