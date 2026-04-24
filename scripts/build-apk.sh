@@ -74,6 +74,20 @@ fi
 : "${BW_KEY_ALIAS:=android}"
 export BW_KEYSTORE_PASSWORD BW_KEY_PASSWORD BW_KEY_ALIAS
 
+echo "→ Seeding ~/.bubblewrap/config.json (skips JDK/SDK prompts)"
+mkdir -p ~/.bubblewrap
+JDK_PATH="${BW_JDK_PATH:-${JAVA_HOME:-}}"
+SDK_PATH="${BW_SDK_PATH:-${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}}"
+if [ -z "$JDK_PATH" ] || [ -z "$SDK_PATH" ]; then
+  echo "   WARN: JDK_PATH or SDK_PATH is empty. Set JAVA_HOME + ANDROID_HOME (or BW_JDK_PATH / BW_SDK_PATH) before running, otherwise bubblewrap will prompt and abort." >&2
+fi
+cat > ~/.bubblewrap/config.json <<JSON
+{
+  "jdkPath": "${JDK_PATH}",
+  "androidSdkPath": "${SDK_PATH}"
+}
+JSON
+
 echo "→ Running bubblewrap build"
 rm -rf "$BUILD_DIR"
 mkdir  "$BUILD_DIR"
