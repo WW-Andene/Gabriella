@@ -30,6 +30,7 @@ import { loadChronology } from "../../../lib/gabriella/chronology.js";
 import { loadLedger } from "../../../lib/gabriella/callbacks.js";
 import { loadPlan } from "../../../lib/gabriella/planner.js";
 import { resolveUserId } from "../../../lib/gabriella/users.js";
+import { recentFeltStates } from "../../../lib/gabriella/episodic.js";
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -97,12 +98,13 @@ export async function GET(req) {
   const userId = resolveUserId(req);
 
   try {
-    const [self, stream, chronology, callbacks, plan] = await Promise.all([
+    const [self, stream, chronology, callbacks, plan, recentFs] = await Promise.all([
       loadSelf(redis, userId),
       readStream(redis, userId, { limit: 15 }).catch(() => []),
       loadChronology(redis, userId).catch(() => null),
       loadLedger(redis, userId).catch(() => ({ landed: 0, missed: 0, total: 0 })),
       loadPlan(redis, userId).catch(() => null),
+      recentFeltStates(redis, userId, 30).catch(() => []),
     ]);
 
     const rate = callbacks.total > 0
@@ -168,6 +170,19 @@ export async function GET(req) {
         total:       callbacks.total  || 0,
         landingRate: rate,
       },
+
+      // Conversation arc — last ~30 turns of felt-state, projected
+      // into (weight, temperature, edge) tuples for client-side
+      // rendering. Lets /retro show how the conversation has been
+      // moving through her interpretive space.
+      arc: (recentFs || []).slice(0, 30).map(fs => ({
+        at:          fs.at || fs.timestamp || null,
+        temp:        fs.temp || fs.temperature || null,
+        weight:      typeof fs.weight === "number" ? fs.weight : null,
+        edge:        !!fs.edge,
+        charge:      fs.charge || null,
+        consensus:   fs.consensus || null,
+      })).filter(p => p.temp || typeof p.weight === "number"),
 
       chronology: chronology ? {
         totalTurns:     chronology.totalTurns || 0,

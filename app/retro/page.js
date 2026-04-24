@@ -34,6 +34,78 @@ const css = {
   link:  { color: "#ffb070", textDecoration: "none" },
 };
 
+// Conversation arc chart — SVG sparkline-style. Two series stacked:
+// temperature (closed→terse→present→open mapped to 0..3) as a line
+// with edge-flagged points marked, and pragmatic weight (0..1) as a
+// separate light line below. Oldest-on-left so the rightmost point
+// is "right now."
+function ArcChart({ arc }) {
+  if (!arc || arc.length < 2) return null;
+
+  const W = 680;
+  const H = 110;
+  const pad = { l: 32, r: 12, t: 8, b: 18 };
+
+  const tempMap = { closed: 0, terse: 1, present: 2, open: 3 };
+  // Reverse so most-recent is rightmost (server returns newest-first).
+  const points = [...arc].reverse();
+
+  const xFor = (i) => pad.l + ((W - pad.l - pad.r) * (i / Math.max(1, points.length - 1)));
+  // Temperature axis takes the upper 60% of plot
+  const tempY = (v) => pad.t + (1 - v / 3) * ((H - pad.t - pad.b) * 0.6);
+  // Weight axis takes the lower 40%
+  const weightY = (w) => pad.t + (H - pad.t - pad.b) * 0.6 + (1 - (w ?? 0)) * ((H - pad.t - pad.b) * 0.4);
+
+  // Build temperature path (skip nulls).
+  const tempPath = points
+    .map((p, i) => p.temp != null && tempMap[p.temp] != null
+      ? `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${tempY(tempMap[p.temp]).toFixed(1)}`
+      : null)
+    .filter(Boolean)
+    .join(" ");
+
+  const weightPath = points
+    .map((p, i) => typeof p.weight === "number"
+      ? `${i === 0 ? "M" : "L"} ${xFor(i).toFixed(1)} ${weightY(p.weight).toFixed(1)}`
+      : null)
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: "block" }}>
+      {/* Temperature axis labels */}
+      <text x={4} y={tempY(3) + 3} fontSize={8} fill="#555566">open</text>
+      <text x={4} y={tempY(2) + 3} fontSize={8} fill="#555566">present</text>
+      <text x={4} y={tempY(1) + 3} fontSize={8} fill="#555566">terse</text>
+      <text x={4} y={tempY(0) + 3} fontSize={8} fill="#555566">closed</text>
+      <text x={4} y={weightY(1) + 3} fontSize={8} fill="#555566">w 1</text>
+      <text x={4} y={weightY(0) + 3} fontSize={8} fill="#555566">w 0</text>
+
+      {/* Faint horizontal gridlines */}
+      {[0, 1, 2, 3].map(v => (
+        <line key={v} x1={pad.l} x2={W - pad.r} y1={tempY(v)} y2={tempY(v)} stroke="#22222e" strokeWidth={0.5} />
+      ))}
+      <line x1={pad.l} x2={W - pad.r} y1={weightY(0)} y2={weightY(0)} stroke="#22222e" strokeWidth={0.5} />
+      <line x1={pad.l} x2={W - pad.r} y1={weightY(1)} y2={weightY(1)} stroke="#22222e" strokeWidth={0.5} />
+
+      {/* Temperature line — amber */}
+      {tempPath && <path d={tempPath} fill="none" stroke="#ffb070" strokeWidth={1.5} />}
+
+      {/* Weight line — slate */}
+      {weightPath && <path d={weightPath} fill="none" stroke="#93c5fd" strokeWidth={1} opacity={0.7} />}
+
+      {/* Edge-flagged points — open circles */}
+      {points.map((p, i) => p.edge && p.temp && tempMap[p.temp] != null ? (
+        <circle key={i} cx={xFor(i)} cy={tempY(tempMap[p.temp])} r={2.4} fill="#fca5a5" stroke="#0a0a0f" strokeWidth={0.6} />
+      ) : null)}
+
+      {/* Right-edge "now" tick */}
+      <line x1={W - pad.r} x2={W - pad.r} y1={pad.t} y2={H - pad.b} stroke="#33334a" strokeWidth={0.5} strokeDasharray="2 2" />
+      <text x={W - pad.r - 22} y={H - 4} fontSize={8} fill="#555566">now</text>
+    </svg>
+  );
+}
+
 const KIND_COLOR = {
   thought:     "#93c5fd",
   connection:  "#a78bfa",
@@ -66,7 +138,7 @@ export default function RetroPage() {
   if (error) return <div style={css.shell}><div style={css.wrap}><div style={css.error}>{error}</div></div></div>;
   if (!data) return null;
 
-  const { summary, read, wants, commitments, retired, stream, plan, callbacks, chronology } = data;
+  const { summary, read, wants, commitments, retired, stream, plan, callbacks, chronology, arc } = data;
   const hasAny = summary || read || (wants || []).length || (commitments || []).length;
 
   return (
@@ -146,6 +218,21 @@ export default function RetroPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          </>
+        )}
+
+        {arc && arc.length >= 2 && (
+          <>
+            <h2 style={css.h2}>Conversation arc</h2>
+            <div style={css.card}>
+              <ArcChart arc={arc} />
+              <div style={{ ...css.meta, marginTop: 6, lineHeight: 1.5 }}>
+                amber line: temperature (closed → terse → present → open) ·
+                blue line: weight (0 light → 1 heavy) ·
+                red dots: turns where she felt an edge underneath ·
+                rightmost point: most recent turn
+              </div>
             </div>
           </>
         )}
