@@ -255,7 +255,7 @@ export async function POST(req) {
       currentRegister, currentAuthorial, ripeSeed,
       questionEval, chronology, currentArc, recurrence,
       reasoningTrace, pragmatics, affectState, personModel, narrative,
-      trajectory, phase,
+      trajectory, phase, self,
       // Lifecycle state
       withheld, dynamicBanned,
       // Infra
@@ -287,6 +287,36 @@ export async function POST(req) {
         // splits off from the response text. Uses a rare delimiter
         // (unit-separator U+001F) so there's no collision with natural
         // prose.
+        // Sidecar: inner monologue. The speaker's hidden <think> block
+        // is real interior process, stripped from the visible stream.
+        // Emit as a sidecar marker the client can optionally reveal —
+        // a toggleable "show me what she's thinking" UX. No competitor
+        // exposes this because their characters don't have a coherent
+        // inner monologue to show.
+        if (innerThought) {
+          controller.enqueue(encoder.encode(
+            `\u001F__THINK__${JSON.stringify({ text: innerThought, uncertain: finalUncertain || null })}\u001F`,
+          ));
+        }
+
+        // Sidecar: felt-state snapshot — her read of the moment, want,
+        // temperature. Lets the UI render a subtle mood indicator or
+        // cognition inspector without a second /api call per turn.
+        if (feltState) {
+          const feltSidecar = {
+            charge:      feltState.charge      || null,
+            emotional:   feltState.emotional   || null,
+            want:        feltState.want        || null,
+            temperature: feltState.temperature || null,
+            edge:        feltState.edge        || null,
+            consensus:   feltState.consensus   || null,
+            retried:     !!retried,
+          };
+          controller.enqueue(encoder.encode(
+            `\u001F__FELT__${JSON.stringify(feltSidecar)}\u001F`,
+          ));
+        }
+
         if (toolResult) {
           controller.enqueue(encoder.encode(
             `\u001F__TOOL__${JSON.stringify(toolResult)}\u001F`,
