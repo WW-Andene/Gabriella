@@ -39,22 +39,49 @@ const css = {
 // with edge-flagged points marked, and pragmatic weight (0..1) as a
 // separate light line below. Oldest-on-left so the rightmost point
 // is "right now."
-function ArcChart({ arc }) {
+const EVENT_COLOR = {
+  want_added:            "#4ade80",
+  want_touched:          "#86efac",
+  want_retired:          "#a0a0a0",
+  read_retired:          "#c4b5fd",
+  commitment_confirmed:  "#60a5fa",
+  commitment_refuted:    "#f87171",
+};
+
+function ArcChart({ arc, selfEvents }) {
   if (!arc || arc.length < 2) return null;
 
   const W = 680;
-  const H = 110;
-  const pad = { l: 32, r: 12, t: 8, b: 18 };
+  const H = 140;  // taller — adds a self-events band
+  const pad = { l: 32, r: 12, t: 8, b: 28 };
 
   const tempMap = { closed: 0, terse: 1, present: 2, open: 3 };
   // Reverse so most-recent is rightmost (server returns newest-first).
   const points = [...arc].reverse();
 
   const xFor = (i) => pad.l + ((W - pad.l - pad.r) * (i / Math.max(1, points.length - 1)));
-  // Temperature axis takes the upper 60% of plot
-  const tempY = (v) => pad.t + (1 - v / 3) * ((H - pad.t - pad.b) * 0.6);
-  // Weight axis takes the lower 40%
-  const weightY = (w) => pad.t + (H - pad.t - pad.b) * 0.6 + (1 - (w ?? 0)) * ((H - pad.t - pad.b) * 0.4);
+  const plotH = H - pad.t - pad.b;
+  // Three bands: temperature 50%, weight 30%, self-events 20%
+  const tempBand   = { top: pad.t,                  height: plotH * 0.5 };
+  const weightBand = { top: pad.t + plotH * 0.5,    height: plotH * 0.3 };
+  const eventBand  = { top: pad.t + plotH * 0.8,    height: plotH * 0.2 };
+
+  const tempY   = (v) => tempBand.top + (1 - v / 3) * tempBand.height;
+  const weightY = (w) => weightBand.top + (1 - (w ?? 0)) * weightBand.height;
+
+  // Map self-events to X coordinates. Time range spans from oldest arc
+  // sample to the rightmost (now). Events before the window get clamped
+  // to x=pad.l with a '←' note; events after now get clamped to the
+  // right. Most events land inside the window.
+  const firstAt = points[0]?.at || 0;
+  const lastAt  = points[points.length - 1]?.at || Date.now();
+  const timeSpan = Math.max(1, lastAt - firstAt);
+  const eventXFor = (at) => {
+    if (!at) return null;
+    if (at <= firstAt) return pad.l;
+    if (at >= lastAt)  return W - pad.r;
+    return pad.l + ((W - pad.l - pad.r) * ((at - firstAt) / timeSpan));
+  };
 
   // Build temperature path (skip nulls).
   const tempPath = points
@@ -99,6 +126,28 @@ function ArcChart({ arc }) {
         <circle key={i} cx={xFor(i)} cy={tempY(tempMap[p.temp])} r={2.4} fill="#fca5a5" stroke="#0a0a0f" strokeWidth={0.6} />
       ) : null)}
 
+      {/* Self-events band — tick per event, colored by kind */}
+      <line x1={pad.l} x2={W - pad.r} y1={eventBand.top + eventBand.height / 2} y2={eventBand.top + eventBand.height / 2} stroke="#22222e" strokeWidth={0.5} />
+      <text x={4} y={eventBand.top + eventBand.height / 2 + 3} fontSize={8} fill="#555566">self</text>
+      {(selfEvents || []).map((e, i) => {
+        const x = eventXFor(e.at);
+        if (x == null) return null;
+        const color = EVENT_COLOR[e.kind] || "#666";
+        // Vertical spread within the band so overlapping ticks are visible
+        const yOffset = (i % 3 - 1) * 4;
+        return (
+          <g key={i}>
+            <line
+              x1={x} x2={x}
+              y1={eventBand.top + eventBand.height / 2 - 5 + yOffset}
+              y2={eventBand.top + eventBand.height / 2 + 5 + yOffset}
+              stroke={color} strokeWidth={1.5}
+            />
+            <title>{`${e.kind}: ${e.text}`}</title>
+          </g>
+        );
+      })}
+
       {/* Right-edge "now" tick */}
       <line x1={W - pad.r} x2={W - pad.r} y1={pad.t} y2={H - pad.b} stroke="#33334a" strokeWidth={0.5} strokeDasharray="2 2" />
       <text x={W - pad.r - 22} y={H - 4} fontSize={8} fill="#555566">now</text>
@@ -138,7 +187,7 @@ export default function RetroPage() {
   if (error) return <div style={css.shell}><div style={css.wrap}><div style={css.error}>{error}</div></div></div>;
   if (!data) return null;
 
-  const { summary, read, wants, commitments, retired, stream, plan, callbacks, chronology, arc } = data;
+  const { summary, read, wants, commitments, retired, stream, plan, callbacks, chronology, arc, selfEvents } = data;
   const hasAny = summary || read || (wants || []).length || (commitments || []).length;
 
   return (
@@ -226,12 +275,19 @@ export default function RetroPage() {
           <>
             <h2 style={css.h2}>Conversation arc</h2>
             <div style={css.card}>
-              <ArcChart arc={arc} />
+              <ArcChart arc={arc} selfEvents={selfEvents} />
               <div style={{ ...css.meta, marginTop: 6, lineHeight: 1.5 }}>
                 amber line: temperature (closed → terse → present → open) ·
                 blue line: weight (0 light → 1 heavy) ·
                 red dots: turns where she felt an edge underneath ·
-                rightmost point: most recent turn
+                bottom band: self-events — <span style={{ color: "#4ade80" }}>green: want added</span>,
+                {" "}<span style={{ color: "#86efac" }}>light-green: want touched</span>,
+                {" "}<span style={{ color: "#a0a0a0" }}>grey: want retired</span>,
+                {" "}<span style={{ color: "#c4b5fd" }}>violet: read retired</span>,
+                {" "}<span style={{ color: "#60a5fa" }}>blue: commitment confirmed</span>,
+                {" "}<span style={{ color: "#f87171" }}>red: commitment refuted</span> ·
+                rightmost point: most recent turn ·
+                hover ticks for detail
               </div>
             </div>
           </>

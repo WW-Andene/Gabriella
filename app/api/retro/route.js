@@ -283,10 +283,14 @@ export async function GET(req) {
         landingRate: rate,
       },
 
-      // Conversation arc — last ~30 turns of felt-state, projected
-      // into (weight, temperature, edge) tuples for client-side
-      // rendering. Lets /retro show how the conversation has been
-      // moving through her interpretive space.
+      // Conversation arc — last ~30 turns of felt-state projected
+      // to (at, temp, weight, edge, consensus). Plus SELF-MODEL
+      // EVENTS aligned to the same time axis: when wants were added
+      // or touched or retired, when commitments were confirmed or
+      // refuted, when reads were updated. Turns the arc from
+      // "affect-over-time" into "affect-over-time-with-her-self-
+      // evolution-marked" — the fullest possible visualization of
+      // how this relationship has been evolving from her side.
       arc: (recentFs || []).slice(0, 30).map(fs => ({
         at:          fs.at || fs.timestamp || null,
         temp:        fs.temp || fs.temperature || null,
@@ -295,6 +299,34 @@ export async function GET(req) {
         charge:      fs.charge || null,
         consensus:   fs.consensus || null,
       })).filter(p => p.temp || typeof p.weight === "number"),
+
+      // Self-model events — derived from the self object and the
+      // retired lists. Each has a timestamp so the chart can align.
+      selfEvents: (() => {
+        const events = [];
+        for (const w of (self?.wants || [])) {
+          if (w.addedAt) events.push({ kind: "want_added", at: w.addedAt, text: w.text });
+          if (w.lastTouched && w.lastTouched !== w.addedAt && (w.touches || 0) > 0) {
+            events.push({ kind: "want_touched", at: w.lastTouched, text: w.text });
+          }
+        }
+        for (const r of (self?.retired?.wants || [])) {
+          if (r.retiredAt) events.push({ kind: "want_retired", at: r.retiredAt, text: r.text });
+        }
+        for (const r of (self?.retired?.reads || [])) {
+          if (r.retiredAt) events.push({ kind: "read_retired", at: r.retiredAt, text: r.text });
+        }
+        for (const c of (self?.commitments || [])) {
+          if (c.status === "confirmed") events.push({ kind: "commitment_confirmed", at: c.atTurn || 0, text: c.text });
+        }
+        for (const r of (self?.retired?.commitments || [])) {
+          if (r.retiredAt) events.push({ kind: "commitment_refuted", at: r.retiredAt, text: r.text });
+        }
+        return events
+          .filter(e => e.at && e.at > 0)
+          .sort((a, b) => a.at - b.at)
+          .slice(-20);  // keep most recent 20 for chart density
+      })(),
 
       chronology: chronology ? {
         totalTurns:     chronology.totalTurns || 0,
